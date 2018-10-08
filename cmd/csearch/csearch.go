@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"runtime/pprof"
+	"strings"
 
 	"github.com/ghostlytalamaur/codesearch/index"
 	"github.com/ghostlytalamaur/codesearch/regexp"
@@ -76,6 +77,8 @@ var (
 	maxCount        = flag.Int64("m", 0, "specified maximum number of search results")
 	maxCountPerFile = flag.Int64("M", 0, "specified maximum number of search results per file")
 	addLinesCount   = flag.Uint("addlines", 0, "print additional lines")
+	filePathsStr    = flag.String("filepaths", "", "search only files in specified paths separated by |")
+	ignorePathsCase = flag.Bool("ignorepathscase", false, "Ignore case of paths specified by filepaths param")
 
 	matches bool
 )
@@ -145,16 +148,37 @@ func Main() {
 		log.Printf("post query identified %d possible files\n", len(post))
 	}
 
-	if fre != nil {
+	if fre != nil || *filePathsStr != "" {
 		fnames := make([]uint32, 0, len(post))
-
+		pathsStr := *filePathsStr
+		if *ignorePathsCase {
+			pathsStr = strings.ToLower(pathsStr)
+		}
+		filePaths := strings.Split(strings.ToLower(pathsStr), "|")
 		for _, fileid := range post {
 			name := ix.Name(fileid)
-			start, end := fre.MatchString2(name, true, true)
-			if  start > end {
-				continue
+			if fre != nil {
+				start, end := fre.MatchString2(name, true, true)
+				if start > end {
+					continue
+				}
 			}
-			fnames = append(fnames, fileid)
+
+			shouldAppend := false
+			for _, filePath := range filePaths {
+				if *ignorePathsCase {
+					shouldAppend = strings.Contains(strings.ToLower(name), filePath)
+				} else {
+					shouldAppend = strings.Contains(name, filePath)
+				}
+				if shouldAppend {
+					break
+				}
+			}
+
+			if shouldAppend {
+				fnames = append(fnames, fileid)
+			}
 		}
 
 		if *verboseFlag {
