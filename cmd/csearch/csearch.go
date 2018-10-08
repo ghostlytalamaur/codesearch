@@ -38,6 +38,12 @@ Options:
                the file, starting at 1
   -indexpath FILE
                use specified FILE as the index path. Overrides $CSEARCHINDEX.
+  -addlines N
+               print N additional lines for each search result 
+  -filepaths FILEPATHS
+               search only files in specified paths separated by |
+  -ignorepathscase
+               Ignore case of paths specified by filepaths param
   -verbose     print extra information
   -brute       brute force - search all files in index
   -cpuprofile FILE
