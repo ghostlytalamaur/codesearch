@@ -13,8 +13,8 @@ import (
 	"os"
 	"runtime/pprof"
 
-	"github.com/junkblocker/codesearch/index"
-	"github.com/junkblocker/codesearch/regexp"
+	"github.com/ghostlytalamaur/codesearch/index"
+	"github.com/ghostlytalamaur/codesearch/regexp"
 )
 
 var usageMessage = `usage: csearch [options] regexp
@@ -75,6 +75,7 @@ var (
 	indexPath       = flag.String("indexpath", "", "specifies index path")
 	maxCount        = flag.Int64("m", 0, "specified maximum number of search results")
 	maxCountPerFile = flag.Int64("M", 0, "specified maximum number of search results per file")
+	addLinesCount   = flag.Uint("addlines", 0, "print additional lines")
 
 	matches bool
 )
@@ -149,7 +150,8 @@ func Main() {
 
 		for _, fileid := range post {
 			name := ix.Name(fileid)
-			if fre.MatchString(name, true, true) < 0 {
+			start, end := fre.MatchString2(name, true, true)
+			if  start > end {
 				continue
 			}
 			fnames = append(fnames, fileid)
@@ -162,6 +164,7 @@ func Main() {
 	}
 
 	g.LimitPrintCount(*maxCount, *maxCountPerFile)
+	g.SetAddLinesCount(*addLinesCount)
 
 	for _, fileid := range post {
 		name := ix.Name(fileid)

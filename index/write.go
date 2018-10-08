@@ -14,7 +14,7 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/junkblocker/codesearch/sparse"
+	"github.com/ghostlytalamaur/codesearch/sparse"
 )
 
 // Index writing.  See read.go for details of on-disk format.

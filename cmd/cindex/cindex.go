@@ -17,7 +17,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/junkblocker/codesearch/index"
+	"github.com/ghostlytalamaur/codesearch/index"
 )
 
 const (

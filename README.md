@@ -2,19 +2,19 @@
 
 ## To install this fork
 
-    go get github.com/junkblocker/codesearch/...
+    go get github.com/ghostlytalamaur/codesearch/...
 
 
 ## Prebuilt binaries
 
-New releases [https://github.com/junkblocker/codesearch/releases](https://github.com/junkblocker/codesearch/releases)
+New releases [https://github.com/ghostlytalamaur/codesearch/releases](https://github.com/ghostlytalamaur/codesearch/releases)
 
-Old releases [https://github.com/junkblocker/codesearch-pre-github/releases](https://github.com/junkblocker/codesearch-pre-github/releases)
+Old releases [https://github.com/ghostlytalamaur/codesearch-pre-github/releases](https://github.com/ghostlytalamaur/codesearch-pre-github/releases)
 
 
 ### Old fork pre-"Google on Github" days
 
-[https://github.com/junkblocker/codesearch-pre-github](https://github.com/junkblocker/codesearch-pre-github)
+[https://github.com/ghostlytalamaur/codesearch-pre-github](https://github.com/ghostlytalamaur/codesearch-pre-github)
 
 
 ## Original Google codesearch README content

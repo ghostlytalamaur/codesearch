@@ -13,7 +13,7 @@ import (
 	"os"
 	"runtime/pprof"
 
-	"github.com/junkblocker/codesearch/regexp"
+	"github.com/ghostlytalamaur/codesearch/regexp"
 )
 
 var usageMessage = `usage: cgrep [-c] [-h] [-i] [-l [-0]] [-n] regexp [file...]
@@ -78,7 +78,7 @@ func main() {
 	}
 	g.Regexp = re
 	if len(args) == 1 {
-		g.Reader(os.Stdin, "<standard input>")
+		g.Reader2(os.Stdin, "<standard input>")
 	} else {
 		for _, arg := range args[1:] {
 			g.File(arg)
