@@ -9,6 +9,7 @@
 package regexp
 
 import (
+	"bytes"
 	"regexp"
 	"regexp/syntax"
 )
@@ -65,7 +66,23 @@ func (r *Regexp) Match(b []byte, beginText, endText bool) (end int) {
 	return r.m.match(b, beginText, endText)
 }
 
-func (r *Regexp) Match2(b []byte, beginText, endText bool) (start, end int) {
+func (r *Regexp) MatchDef(b []byte, beginText, endText bool) (start, end int) {
+	start = 1
+	end = -1
+	m1 := r.m.match(b, beginText, endText)
+	if m1 >= 0 {
+		start = bytes.LastIndex(b[:m1], nl) + 1
+		end = m1
+		if start2, end2 := r.MatchRe2(b[start:end], beginText, endText); start2 <= end2 {
+			end = start + end2
+			start = start + start2
+		}
+	}
+	return start, end
+}
+
+
+func (r *Regexp) MatchRe2(b []byte, beginText, endText bool) (start, end int) {
 	re2match := r.re2.FindSubmatchIndex(b)
 	start = 1
 	end = -1

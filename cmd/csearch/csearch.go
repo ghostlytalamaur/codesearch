@@ -44,6 +44,7 @@ Options:
                search only files in specified paths separated by |
   -ignorepathscase
                Ignore case of paths specified by filepaths param
+  -re2         Use Go regexp engine
   -verbose     print extra information
   -brute       brute force - search all files in index
   -cpuprofile FILE
@@ -82,7 +83,6 @@ var (
 	indexPath       = flag.String("indexpath", "", "specifies index path")
 	maxCount        = flag.Int64("m", 0, "specified maximum number of search results")
 	maxCountPerFile = flag.Int64("M", 0, "specified maximum number of search results per file")
-	addLinesCount   = flag.Uint("addlines", 0, "print additional lines")
 	filePathsStr    = flag.String("filepaths", "", "search only files in specified paths separated by |")
 	ignorePathsCase = flag.Bool("ignorepathscase", false, "Ignore case of paths specified by filepaths param")
 
@@ -194,7 +194,6 @@ func Main() {
 	}
 
 	g.LimitPrintCount(*maxCount, *maxCountPerFile)
-	g.SetAddLinesCount(*addLinesCount)
 
 	for _, fileid := range post {
 		name := ix.Name(fileid)

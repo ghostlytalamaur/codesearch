@@ -295,6 +295,7 @@ func (m *matcher) match(b []byte, beginText, endText bool) (end int) {
 				if d.matchNL {
 					return i
 				}
+			//}
 				d1 = m.startLine
 			} else {
 				d1 = m.computeNext(d, int(c))
@@ -361,6 +362,7 @@ type Grep struct {
 	C bool // C flag - print count of matches
 	N bool // N flag - print line numbers
 	H bool // H flag - do not print file names
+	useRe2 bool // Use Go regexp engine
 
 	Done                 bool
 	lines_printed        int64 // running match count
@@ -380,6 +382,8 @@ func (g *Grep) AddFlags() {
 	flag.BoolVar(&g.C, "c", false, "print match counts only")
 	flag.BoolVar(&g.N, "n", false, "show line numbers")
 	flag.BoolVar(&g.H, "h", false, "omit file names")
+	flag.BoolVar(&g.useRe2, "re2", false, "Use Go regexp engine")
+	flag.UintVar(&g.addLinesCount, "addlines", 0, "print additional lines")
 }
 
 func (g *Grep) File(name string) {
@@ -389,7 +393,12 @@ func (g *Grep) File(name string) {
 		return
 	}
 	defer f.Close()
-	g.Reader2(f, name)
+	g.UniReader(f, name)
+	//if g.useRe2 {
+	//	g.Reader2(f, name)
+	//} else {
+	//	g.Reader(f, name)
+	//}
 }
 
 func (g *Grep) LimitPrintCount(globalLimit int64, fileLimit int64) {
@@ -590,7 +599,7 @@ func (g *Grep) Reader2(r io.Reader, name string) {
 		}
 		chunkStart := 0
 		for chunkStart < end {
-			matchStart, matchEnd := g.Regexp.Match2(buf[chunkStart:end], beginText, endText)
+			matchStart, matchEnd := g.Regexp.MatchRe2(buf[chunkStart:end], beginText, endText)
 			matchStart += chunkStart
 			matchEnd += chunkStart
 			if matchStart > matchEnd {
@@ -688,6 +697,141 @@ func (g *Grep) Reader2(r io.Reader, name string) {
 		}
 	}
 }
-func (g *Grep) SetAddLinesCount(addLinesCount uint) {
-	g.addLinesCount = addLinesCount
+
+func (g *Grep) UniReader(r io.Reader, name string) {
+	if g.Done {
+		return
+	}
+	if g.buf == nil {
+		g.buf = make([]byte, 1<<20)
+	}
+	var (
+		buf                  = g.buf[:0]
+		needLineno           = g.N
+		lineno               = 1
+		count                = 0
+		prefix               = ""
+		beginText            = true
+		endText              = false
+		outSep               = '\n'
+		printedForFile int64 = 0
+	)
+	if !g.H {
+		prefix = name + ":"
+	}
+	if g.L && g.Z {
+		outSep = '\x00'
+	}
+	for {
+		n, err := io.ReadFull(r, buf[len(buf):cap(buf)])
+		buf = buf[:len(buf)+n]
+		end := len(buf)
+		if err == nil {
+			end = bytes.LastIndex(buf, nl) + 1
+		} else {
+			endText = true
+		}
+		chunkStart := 0
+		for chunkStart < end {
+			var matchStart, matchEnd int
+			if g.useRe2 {
+				matchStart, matchEnd = g.Regexp.MatchRe2(buf[chunkStart:end], beginText, endText)
+			} else {
+				matchStart, matchEnd = g.Regexp.MatchDef(buf[chunkStart:end], beginText, endText)
+			}
+			matchStart += chunkStart
+			matchEnd += chunkStart
+			if matchStart > matchEnd {
+				break
+			}
+			beginText = false
+			//if m1 < chunkStart {
+			//	break
+			//}
+			g.Match = true
+			if g.L {
+				fmt.Fprintf(g.Stdout, "%s%c", name, outSep)
+				g.lines_printed++
+				if g.max_print_lines > 0 && g.lines_printed >= g.max_print_lines {
+					g.Done = true
+				}
+				return
+			}
+			lineStart := bytes.LastIndex(buf[chunkStart:matchStart], nl) + 1 + chunkStart
+			lineEnd := len(buf)
+			if nlIndex := bytes.Index(buf[matchEnd:], nl); nlIndex >= 0 {
+				lineEnd = nlIndex + 1 + matchEnd
+			}
+			//lineEnd := matchEnd + 1
+			if lineEnd > end {
+				lineEnd = end
+			}
+			if needLineno {
+				lineno += countNL(buf[chunkStart:lineStart])
+			}
+			//line := buf[lineStart:lineEnd]
+			preMatchStr := buf[lineStart:matchStart]
+			matchStr := buf[matchStart: matchEnd]
+			postMatchStr := buf[matchEnd:lineEnd]
+			if g.addLinesCount > 0 {
+				idx := findNL(buf, lineStart, false, g.addLinesCount)
+				if idx != 0 {
+					idx++
+				}
+				preMatchStr = buf[idx:matchStart]
+				idx = findNL(buf, matchEnd, true, g.addLinesCount)
+				postMatchStr = buf[matchEnd:idx + 1]
+			}
+			switch {
+			case g.C:
+				count++
+			case g.N:
+				fmt.Fprintf(g.Stdout, "%s%d:%s%s%s", prefix, lineno, preMatchStr, aurora.Bold(matchStr), postMatchStr)
+				g.lines_printed++
+				printedForFile++
+				if g.max_print_lines > 0 && g.lines_printed >= g.max_print_lines {
+					g.Done = true
+					return
+				}
+				if g.maxPrintLinesPerFile > 0 && printedForFile >= g.maxPrintLinesPerFile {
+					return
+				}
+			default:
+				fmt.Fprintf(g.Stdout, "%s%s%s%s", prefix, preMatchStr, aurora.Bold(matchStr), postMatchStr)
+				g.lines_printed++
+				printedForFile++
+				if g.max_print_lines > 0 && g.lines_printed >= g.max_print_lines {
+					g.Done = true
+					return
+				}
+				if g.maxPrintLinesPerFile > 0 && printedForFile >= g.maxPrintLinesPerFile {
+					return
+				}
+			}
+			if needLineno {
+				lineno++
+			}
+			chunkStart = lineEnd
+		}
+		if needLineno && err == nil {
+			lineno += countNL(buf[chunkStart:end])
+		}
+		n = copy(buf, buf[end:])
+		buf = buf[:n]
+		if len(buf) == 0 && err != nil {
+			if err != io.EOF && err != io.ErrUnexpectedEOF {
+				fmt.Fprintf(g.Stderr, "%s: %v\n", name, err)
+				// error lines do not count towards max lines printed
+			}
+			break
+		}
+	}
+	if g.C && count > 0 {
+		fmt.Fprintf(g.Stdout, "%s: %d\n", name, count)
+		g.lines_printed++
+		if g.max_print_lines > 0 && g.lines_printed >= g.max_print_lines {
+			g.Done = true
+			return
+		}
+	}
 }
