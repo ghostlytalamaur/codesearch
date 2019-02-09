@@ -46,6 +46,7 @@ Options:
                Ignore case of paths specified by filepaths param
   -re2         Use Go regexp engine
   -verbose     print extra information
+  -extstatus   print additional status information
   -brute       brute force - search all files in index
   -cpuprofile FILE
                write CPU profile to FILE
@@ -85,7 +86,7 @@ var (
 	maxCountPerFile = flag.Int64("M", 0, "specified maximum number of search results per file")
 	filePathsStr    = flag.String("filepaths", "", "search only files in specified paths separated by |")
 	ignorePathsCase = flag.Bool("ignorepathscase", false, "Ignore case of paths specified by filepaths param")
-
+	extStatus 		= flag.Bool("extstatus", false, "Print additional status info")
 	matches bool
 )
 
@@ -195,8 +196,15 @@ func Main() {
 
 	g.LimitPrintCount(*maxCount, *maxCountPerFile)
 
-	for _, fileid := range post {
+	if *extStatus {
+		fmt.Fprintf(os.Stdout, "Status: Identified %d possible files\n", len(post))
+	}
+	allFilesCount := len(post)
+	for i, fileid := range post {
 		name := ix.Name(fileid)
+		if *extStatus {
+			fmt.Fprintf(os.Stdout, "Status: Searching in %d/%d file %s\n", i, allFilesCount, name)
+		}
 		g.File(name)
 		// short circuit here too
 		if g.Done {
