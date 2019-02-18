@@ -25,7 +25,9 @@ Options:
   -c           print only a count of selected lines to stdout
                (Not meaningful with -l or -M modes)
   -f PATHREGEXP
-               search only files with names matching this regexp
+			   search only files with names matching this regexp
+  -fexclude    PATHREGEXP
+               search only files with names not matching this regexp
   -h           print this help text and exit
   -i           case-insensitive search
   -l           print only the names of the files containing matches
@@ -77,6 +79,7 @@ func usage() {
 
 var (
 	fFlag           = flag.String("f", "", "search only files with names matching this regexp")
+	fExcludeFlag    = flag.String("fexclude", "", "search only files with names not matching this regexp")
 	iFlag           = flag.Bool("i", false, "case-insensitive search")
 	verboseFlag     = flag.Bool("verbose", false, "print extra information")
 	bruteFlag       = flag.Bool("brute", false, "brute force - search all files in index")
@@ -86,8 +89,8 @@ var (
 	maxCountPerFile = flag.Int64("M", 0, "specified maximum number of search results per file")
 	filePathsStr    = flag.String("filepaths", "", "search only files in specified paths separated by |")
 	ignorePathsCase = flag.Bool("ignorepathscase", false, "Ignore case of paths specified by filepaths param")
-	extStatus 		= flag.Bool("extstatus", false, "Print additional status info")
-	matches bool
+	extStatus       = flag.Bool("extstatus", false, "Print additional status info")
+	matches         bool
 )
 
 func Main() {
@@ -138,6 +141,14 @@ func Main() {
 			log.Fatal(err)
 		}
 	}
+
+	var fExcludeRe *regexp.Regexp
+	if *fExcludeFlag != "" {
+		fExcludeRe, err = regexp.Compile(*fExcludeFlag)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 	q := index.RegexpQuery(re.Syntax)
 	if *verboseFlag {
 		log.Printf("query: %s\n", q)
@@ -155,18 +166,25 @@ func Main() {
 		log.Printf("post query identified %d possible files\n", len(post))
 	}
 
-	if fre != nil || *filePathsStr != "" {
+	if fre != nil || fExcludeRe != nil || *filePathsStr != "" {
 		fnames := make([]uint32, 0, len(post))
 		pathsStr := *filePathsStr
 		if *ignorePathsCase {
 			pathsStr = strings.ToLower(pathsStr)
 		}
-		filePaths := strings.Split(strings.ToLower(pathsStr), "|")
+		filePaths := strings.Split(pathsStr, "|")
 		for _, fileid := range post {
 			name := ix.Name(fileid)
 			if fre != nil {
 				start, end := fre.MatchString2(name, true, true)
 				if start > end {
+					continue
+				}
+			}
+
+			if fExcludeRe != nil {
+				start, end := fExcludeRe.MatchString2(name, true, true)
+				if start <= end {
 					continue
 				}
 			}
@@ -196,10 +214,13 @@ func Main() {
 
 	g.LimitPrintCount(*maxCount, *maxCountPerFile)
 
-	if *extStatus {
-		fmt.Fprintf(os.Stdout, "Status: Identified %d possible files\n", len(post))
-	}
 	allFilesCount := len(post)
+	if allFilesCount == 0 {
+		log.Fatal("0 files identified with selected params.")
+	}
+	if *extStatus {
+		fmt.Fprintf(os.Stdout, "Status: Identified %d possible files", len(post))
+	}
 	for i, fileid := range post {
 		name := ix.Name(fileid)
 		if *extStatus {
