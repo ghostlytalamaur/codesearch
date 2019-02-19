@@ -48,7 +48,9 @@ var (
 
 func main() {
 	var g regexp.Grep
-	g.AddFlags()
+	var grepParams regexp.GrepParams
+	grepParams.AddFlags()
+	g.Params = grepParams
 	g.Stdout = os.Stdout
 	g.Stderr = os.Stderr
 	flag.Usage = usage

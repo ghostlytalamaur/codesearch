@@ -81,7 +81,6 @@ func (r *Regexp) MatchDef(b []byte, beginText, endText bool) (start, end int) {
 	return start, end
 }
 
-
 func (r *Regexp) MatchRe2(b []byte, beginText, endText bool) (start, end int) {
 	re2match := r.re2.FindSubmatchIndex(b)
 	start = 1
@@ -89,18 +88,8 @@ func (r *Regexp) MatchRe2(b []byte, beginText, endText bool) (start, end int) {
 	if re2match != nil {
 		start = re2match[0]
 		end = re2match[1]
-		//for i := re2match[1]; i < len(b); i++ {
-		//	if b[i] == '\n' {
-		//		end = i
-		//		break
-		//	}
-		//}
 	}
 
-	//m := r.m.match(b, beginText, endText)
-	//fmt.Printf("Buffer:\n%s\n\n", b)
-	//fmt.Printf("Re2: %v, end = %d\n", re2match, end)
-	//fmt.Println("Matcher: ", m)
 	return start, end
 }
 
@@ -115,17 +104,7 @@ func (r *Regexp) MatchString2(s string, beginText, endText bool) (start, end int
 	if re2match != nil {
 		start = re2match[0]
 		end = re2match[1]
-		//for i := re2match[1]; i < len(b); i++ {
-		//	if b[i] == '\n' {
-		//		end = i
-		//		break
-		//	}
-		//}
 	}
 
-	//m := r.m.match(b, beginText, endText)
-	//fmt.Printf("Buffer:\n%s\n\n", b)
-	//fmt.Printf("Re2: %v, end = %d\n", re2match, end)
-	//fmt.Println("Matcher: ", m)
 	return start, end
 }

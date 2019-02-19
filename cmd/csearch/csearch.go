@@ -18,7 +18,7 @@ import (
 	"github.com/ghostlytalamaur/codesearch/regexp"
 )
 
-var usageMessage = `usage: csearch [options] regexp
+const usageMessage = `usage: csearch [options] regexp
 
 Options:
 
@@ -110,48 +110,27 @@ func (p *CSearchParams) addFlags() {
 	p.grepParams.AddFlags()
 }
 
-func Main() bool {
-	var params CSearchParams
-	params.addFlags()
-	flag.Usage = usage
-	flag.Parse()
-	args := flag.Args()
-
-	if len(args) != 1 || (params.grepParams.L && params.grepParams.C) ||
-		(params.grepParams.L && params.maxCountPerFile > 0) || (params.grepParams.C && params.maxCountPerFile > 0) {
-		usage()
+func selectFiles(re *regexp.Regexp, ix *index.Index, params *CSearchParams) (post []uint32, err error) {
+	q := index.RegexpQuery(re.Syntax)
+	if params.verboseFlag {
+		log.Printf("query: %s\n", q)
 	}
 
-	if params.cpuProfile != "" {
-		f, err := os.Create(params.cpuProfile)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer f.Close()
-		pprof.StartCPUProfile(f)
-		defer pprof.StopCPUProfile()
+	if params.bruteFlag {
+		post = ix.PostingQuery(&index.Query{Op: index.QAll})
+	} else {
+		post = ix.PostingQuery(q)
 	}
 
-	if params.indexPath != "" {
-		err := os.Setenv("CSEARCHINDEX", params.indexPath)
-		if err != nil {
-			log.Fatal(err)
-		}
+	if params.verboseFlag {
+		log.Printf("post query identified %d possible files\n", len(post))
 	}
 
-	pat := "(?m)" + args[0]
-	if params.iFlag {
-		pat = "(?i)" + pat
-	}
-	re, err := regexp.Compile(pat)
-	if err != nil {
-		log.Fatal(err)
-	}
 	var fre *regexp.Regexp
 	if params.fFlag != "" {
 		fre, err = regexp.Compile(params.fFlag)
 		if err != nil {
-			log.Fatal(err)
+			return nil, err
 		}
 	}
 
@@ -159,24 +138,8 @@ func Main() bool {
 	if params.fExcludeFlag != "" {
 		fExcludeRe, err = regexp.Compile(params.fExcludeFlag)
 		if err != nil {
-			log.Fatal(err)
+			return nil, err
 		}
-	}
-	q := index.RegexpQuery(re.Syntax)
-	if params.verboseFlag {
-		log.Printf("query: %s\n", q)
-	}
-
-	ix := index.Open(index.File())
-	ix.Verbose = params.verboseFlag
-	var post []uint32
-	if params.bruteFlag {
-		post = ix.PostingQuery(&index.Query{Op: index.QAll})
-	} else {
-		post = ix.PostingQuery(q)
-	}
-	if params.verboseFlag {
-		log.Printf("post query identified %d possible files\n", len(post))
 	}
 
 	if fre != nil || fExcludeRe != nil || params.filePathsStr != "" {
@@ -225,6 +188,63 @@ func Main() bool {
 		post = fnames
 	}
 
+	return post, nil
+}
+
+func prepareIndex(params *CSearchParams) (*index.Index, error) {
+	if params.indexPath != "" {
+		err := os.Setenv("CSEARCHINDEX", params.indexPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	ix := index.Open(index.File())
+	ix.Verbose = params.verboseFlag
+	return ix, nil
+}
+
+func search() bool {
+	var params CSearchParams
+	params.addFlags()
+	flag.Usage = usage
+	flag.Parse()
+	args := flag.Args()
+
+	if len(args) != 1 || (params.grepParams.L && params.grepParams.C) ||
+		(params.grepParams.L && params.maxCountPerFile > 0) || (params.grepParams.C && params.maxCountPerFile > 0) {
+		usage()
+	}
+
+	if params.cpuProfile != "" {
+		f, err := os.Create(params.cpuProfile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer f.Close()
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
+
+	pat := "(?m)" + args[0]
+	if params.iFlag {
+		pat = "(?i)" + pat
+	}
+	re, err := regexp.Compile(pat)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	ix, err := prepareIndex(&params)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	post, err := selectFiles(re, ix, &params)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	allFilesCount := len(post)
 	if allFilesCount == 0 {
 		log.Fatal("0 files identified with selected params.")
@@ -239,6 +259,7 @@ func Main() bool {
 		Regexp: re,
 	}
 	g.LimitPrintCount(params.maxCount, params.maxCountPerFile)
+
 	for i, fileid := range post {
 		name := ix.Name(fileid)
 		if params.extStatus {
@@ -255,7 +276,7 @@ func Main() bool {
 }
 
 func main() {
-	if !Main() {
+	if !search() {
 		os.Exit(1)
 	}
 	os.Exit(0)
