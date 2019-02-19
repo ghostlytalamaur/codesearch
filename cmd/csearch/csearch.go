@@ -77,39 +77,53 @@ func usage() {
 	os.Exit(2)
 }
 
-var (
-	fFlag           = flag.String("f", "", "search only files with names matching this regexp")
-	fExcludeFlag    = flag.String("fexclude", "", "search only files with names not matching this regexp")
-	iFlag           = flag.Bool("i", false, "case-insensitive search")
-	verboseFlag     = flag.Bool("verbose", false, "print extra information")
-	bruteFlag       = flag.Bool("brute", false, "brute force - search all files in index")
-	cpuProfile      = flag.String("cpuprofile", "", "write cpu profile to this file")
-	indexPath       = flag.String("indexpath", "", "specifies index path")
-	maxCount        = flag.Int64("m", 0, "specified maximum number of search results")
-	maxCountPerFile = flag.Int64("M", 0, "specified maximum number of search results per file")
-	filePathsStr    = flag.String("filepaths", "", "search only files in specified paths separated by |")
-	ignorePathsCase = flag.Bool("ignorepathscase", false, "Ignore case of paths specified by filepaths param")
-	extStatus       = flag.Bool("extstatus", false, "Print additional status info")
-	matches         bool
-)
+// CSearchParams - params for code search
+type CSearchParams struct {
+	fFlag           string // ;           = flag.String("f", "", "search only files with names matching this regexp")
+	fExcludeFlag    string // ; //     = flag.String("fexclude", "", "search only files with names not matching this regexp")
+	iFlag           bool   //           = flag.Bool("i", false, "case-insensitive search")
+	verboseFlag     bool   //     = flag.Bool("verbose", false, "print extra information")
+	bruteFlag       bool   //      = flag.Bool("brute", false, "brute force - search all files in index")
+	cpuProfile      string //     = flag.String("cpuprofile", "", "write cpu profile to this file")
+	indexPath       string //      = flag.String("indexpath", "", "specifies index path")
+	maxCount        int64  //       = flag.Int64("m", 0, "specified maximum number of search results")
+	maxCountPerFile int64  // = flag.Int64("M", 0, "specified maximum number of search results per file")
+	filePathsStr    string //   = flag.String("filepaths", "", "search only files in specified paths separated by |")
+	ignorePathsCase bool   //  = flag.Bool("ignorepathscase", false, "Ignore case of paths specified by filepaths param")
+	extStatus       bool   //      = flag.Bool("extstatus", false, "Print additional status info")
+	grepParams      regexp.GrepParams
+}
 
-func Main() {
-	g := regexp.Grep{
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-	}
-	g.AddFlags()
+func (p *CSearchParams) addFlags() {
+	flag.StringVar(&p.fFlag, "f", "", "search only files with names matching this regexp")
+	flag.StringVar(&p.fExcludeFlag, "fexclude", "", "search only files with names not matching this regexp")
+	flag.BoolVar(&p.iFlag, "i", false, "case-insensitive search")
+	flag.BoolVar(&p.verboseFlag, "verbose", false, "print extra information")
+	flag.BoolVar(&p.bruteFlag, "brute", false, "brute force - search all files in index")
+	flag.StringVar(&p.cpuProfile, "cpuprofile", "", "write cpu profile to this file")
+	flag.StringVar(&p.indexPath, "indexpath", "", "specifies index path")
+	flag.Int64Var(&p.maxCount, "m", 0, "specified maximum number of search results")
+	flag.Int64Var(&p.maxCountPerFile, "M", 0, "specified maximum number of search results per file")
+	flag.StringVar(&p.filePathsStr, "filepaths", "", "search only files in specified paths separated by |")
+	flag.BoolVar(&p.ignorePathsCase, "ignorepathscase", false, "Ignore case of paths specified by filepaths param")
+	flag.BoolVar(&p.extStatus, "extstatus", false, "Print additional status info")
+	p.grepParams.AddFlags()
+}
 
+func Main() bool {
+	var params CSearchParams
+	params.addFlags()
 	flag.Usage = usage
 	flag.Parse()
 	args := flag.Args()
 
-	if len(args) != 1 || (g.L && g.C) || (g.L && *maxCountPerFile > 0) || (g.C && *maxCountPerFile > 0) {
+	if len(args) != 1 || (params.grepParams.L && params.grepParams.C) ||
+		(params.grepParams.L && params.maxCountPerFile > 0) || (params.grepParams.C && params.maxCountPerFile > 0) {
 		usage()
 	}
 
-	if *cpuProfile != "" {
-		f, err := os.Create(*cpuProfile)
+	if params.cpuProfile != "" {
+		f, err := os.Create(params.cpuProfile)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -118,58 +132,57 @@ func Main() {
 		defer pprof.StopCPUProfile()
 	}
 
-	if *indexPath != "" {
-		err := os.Setenv("CSEARCHINDEX", *indexPath)
+	if params.indexPath != "" {
+		err := os.Setenv("CSEARCHINDEX", params.indexPath)
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
 
 	pat := "(?m)" + args[0]
-	if *iFlag {
+	if params.iFlag {
 		pat = "(?i)" + pat
 	}
 	re, err := regexp.Compile(pat)
 	if err != nil {
 		log.Fatal(err)
 	}
-	g.Regexp = re
 	var fre *regexp.Regexp
-	if *fFlag != "" {
-		fre, err = regexp.Compile(*fFlag)
+	if params.fFlag != "" {
+		fre, err = regexp.Compile(params.fFlag)
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
 
 	var fExcludeRe *regexp.Regexp
-	if *fExcludeFlag != "" {
-		fExcludeRe, err = regexp.Compile(*fExcludeFlag)
+	if params.fExcludeFlag != "" {
+		fExcludeRe, err = regexp.Compile(params.fExcludeFlag)
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
 	q := index.RegexpQuery(re.Syntax)
-	if *verboseFlag {
+	if params.verboseFlag {
 		log.Printf("query: %s\n", q)
 	}
 
 	ix := index.Open(index.File())
-	ix.Verbose = *verboseFlag
+	ix.Verbose = params.verboseFlag
 	var post []uint32
-	if *bruteFlag {
+	if params.bruteFlag {
 		post = ix.PostingQuery(&index.Query{Op: index.QAll})
 	} else {
 		post = ix.PostingQuery(q)
 	}
-	if *verboseFlag {
+	if params.verboseFlag {
 		log.Printf("post query identified %d possible files\n", len(post))
 	}
 
-	if fre != nil || fExcludeRe != nil || *filePathsStr != "" {
+	if fre != nil || fExcludeRe != nil || params.filePathsStr != "" {
 		fnames := make([]uint32, 0, len(post))
-		pathsStr := *filePathsStr
-		if *ignorePathsCase {
+		pathsStr := params.filePathsStr
+		if params.ignorePathsCase {
 			pathsStr = strings.ToLower(pathsStr)
 		}
 		filePaths := strings.Split(pathsStr, "|")
@@ -191,7 +204,7 @@ func Main() {
 
 			shouldAppend := false
 			for _, filePath := range filePaths {
-				if *ignorePathsCase {
+				if params.ignorePathsCase {
 					shouldAppend = strings.Contains(strings.ToLower(name), filePath)
 				} else {
 					shouldAppend = strings.Contains(name, filePath)
@@ -206,24 +219,29 @@ func Main() {
 			}
 		}
 
-		if *verboseFlag {
+		if params.verboseFlag {
 			log.Printf("filename regexp matched %d files\n", len(fnames))
 		}
 		post = fnames
 	}
 
-	g.LimitPrintCount(*maxCount, *maxCountPerFile)
-
 	allFilesCount := len(post)
 	if allFilesCount == 0 {
 		log.Fatal("0 files identified with selected params.")
 	}
-	if *extStatus {
+	if params.extStatus {
 		fmt.Fprintf(os.Stdout, "Status: Identified %d possible files", len(post))
 	}
+	g := regexp.Grep{
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
+		Params: params.grepParams,
+		Regexp: re,
+	}
+	g.LimitPrintCount(params.maxCount, params.maxCountPerFile)
 	for i, fileid := range post {
 		name := ix.Name(fileid)
-		if *extStatus {
+		if params.extStatus {
 			fmt.Fprintf(os.Stdout, "Status: Searching in %d/%d file %s\n", i, allFilesCount, name)
 		}
 		g.File(name)
@@ -233,12 +251,11 @@ func Main() {
 		}
 	}
 
-	matches = g.Match
+	return g.Match
 }
 
 func main() {
-	Main()
-	if !matches {
+	if !Main() {
 		os.Exit(1)
 	}
 	os.Exit(0)

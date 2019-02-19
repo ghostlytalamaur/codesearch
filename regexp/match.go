@@ -11,12 +11,13 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
-	"github.com/ghostlytalamaur/codesearch/sparse"
-	"github.com/logrusorgru/aurora"
 	"io"
 	"os"
 	"regexp/syntax"
 	"sort"
+
+	"github.com/ghostlytalamaur/codesearch/sparse"
+	"github.com/logrusorgru/aurora"
 )
 
 // A matcher holds the state for running regular expression search.
@@ -295,7 +296,7 @@ func (m *matcher) match(b []byte, beginText, endText bool) (end int) {
 				if d.matchNL {
 					return i
 				}
-			//}
+				//}
 				d1 = m.startLine
 			} else {
 				d1 = m.computeNext(d, int(c))
@@ -351,39 +352,43 @@ func isWordByte(c int) bool {
 		c == '_'
 }
 
-// TODO:
+// Grep - TODO
 type Grep struct {
 	Regexp *Regexp   // regexp to search for
 	Stdout io.Writer // output target
 	Stderr io.Writer // error target
-
-	L bool // L flag - print file names only
-	Z bool // 0 flag - print matches separated by \0
-	C bool // C flag - print count of matches
-	N bool // N flag - print line numbers
-	H bool // H flag - do not print file names
-	useRe2 bool // Use Go regexp engine
+	Params GrepParams
 
 	Done                 bool
 	lines_printed        int64 // running match count
 	max_print_lines      int64 // Max match count
 	maxPrintLinesPerFile int64 // Max match count
 
-	addLinesCount        uint
-
 	Match bool
 
 	buf []byte
 }
 
-func (g *Grep) AddFlags() {
-	flag.BoolVar(&g.L, "l", false, "list matching files only")
-	flag.BoolVar(&g.Z, "0", false, "list filename matches separated by NUL ('\\0') character. Requires -l option")
-	flag.BoolVar(&g.C, "c", false, "print match counts only")
-	flag.BoolVar(&g.N, "n", false, "show line numbers")
-	flag.BoolVar(&g.H, "h", false, "omit file names")
-	flag.BoolVar(&g.useRe2, "re2", false, "Use Go regexp engine")
-	flag.UintVar(&g.addLinesCount, "addlines", 0, "print additional lines")
+// GrepParams params for Grep
+type GrepParams struct {
+	L             bool // L flag - print file names only
+	Z             bool // 0 flag - print matches separated by \0
+	C             bool // C flag - print count of matches
+	N             bool // N flag - print line numbers
+	H             bool // H flag - do not print file names
+	useRe2        bool // Use Go regexp engine
+	addLinesCount uint
+}
+
+// AddFlags : Add flags to command line parser
+func (p *GrepParams) AddFlags() {
+	flag.BoolVar(&p.L, "l", false, "list matching files only")
+	flag.BoolVar(&p.Z, "0", false, "list filename matches separated by NUL ('\\0') character. Requires -l option")
+	flag.BoolVar(&p.C, "c", false, "print match counts only")
+	flag.BoolVar(&p.N, "n", false, "show line numbers")
+	flag.BoolVar(&p.H, "h", false, "omit file names")
+	flag.BoolVar(&p.useRe2, "re2", false, "Use Go regexp engine")
+	flag.UintVar(&p.addLinesCount, "addlines", 0, "print additional lines")
 }
 
 func (g *Grep) File(name string) {
@@ -438,7 +443,7 @@ func (g *Grep) Reader(r io.Reader, name string) {
 	}
 	var (
 		buf                  = g.buf[:0]
-		needLineno           = g.N
+		needLineno           = g.Params.N
 		lineno               = 1
 		count                = 0
 		prefix               = ""
@@ -447,10 +452,10 @@ func (g *Grep) Reader(r io.Reader, name string) {
 		outSep               = '\n'
 		printedForFile int64 = 0
 	)
-	if !g.H {
+	if !g.Params.H {
 		prefix = name + ":"
 	}
-	if g.L && g.Z {
+	if g.Params.L && g.Params.Z {
 		outSep = '\x00'
 	}
 	for {
@@ -470,7 +475,7 @@ func (g *Grep) Reader(r io.Reader, name string) {
 				break
 			}
 			g.Match = true
-			if g.L {
+			if g.Params.L {
 				fmt.Fprintf(g.Stdout, "%s%c", name, outSep)
 				g.lines_printed++
 				if g.max_print_lines > 0 && g.lines_printed >= g.max_print_lines {
@@ -488,9 +493,9 @@ func (g *Grep) Reader(r io.Reader, name string) {
 			}
 			line := buf[lineStart:lineEnd]
 			switch {
-			case g.C:
+			case g.Params.C:
 				count++
-			case g.N:
+			case g.Params.N:
 				fmt.Fprintf(g.Stdout, "%s%d:%s", prefix, lineno, line)
 				g.lines_printed++
 				printedForFile++
@@ -531,7 +536,7 @@ func (g *Grep) Reader(r io.Reader, name string) {
 			break
 		}
 	}
-	if g.C && count > 0 {
+	if g.Params.C && count > 0 {
 		fmt.Fprintf(g.Stdout, "%s: %d\n", name, count)
 		g.lines_printed++
 		if g.max_print_lines > 0 && g.lines_printed >= g.max_print_lines {
@@ -541,7 +546,7 @@ func (g *Grep) Reader(r io.Reader, name string) {
 	}
 }
 
-func findNL(buf []byte, startpos int, isDirect bool, skipLines uint) (int) {
+func findNL(buf []byte, startpos int, isDirect bool, skipLines uint) int {
 	direction := 1
 	if !isDirect {
 		direction = -1
@@ -573,7 +578,7 @@ func (g *Grep) Reader2(r io.Reader, name string) {
 	}
 	var (
 		buf                  = g.buf[:0]
-		needLineno           = g.N
+		needLineno           = g.Params.N
 		lineno               = 1
 		count                = 0
 		prefix               = ""
@@ -582,10 +587,10 @@ func (g *Grep) Reader2(r io.Reader, name string) {
 		outSep               = '\n'
 		printedForFile int64 = 0
 	)
-	if !g.H {
+	if !g.Params.H {
 		prefix = name + ":"
 	}
-	if g.L && g.Z {
+	if g.Params.L && g.Params.Z {
 		outSep = '\x00'
 	}
 	for {
@@ -610,7 +615,7 @@ func (g *Grep) Reader2(r io.Reader, name string) {
 			//	break
 			//}
 			g.Match = true
-			if g.L {
+			if g.Params.L {
 				fmt.Fprintf(g.Stdout, "%s%c", name, outSep)
 				g.lines_printed++
 				if g.max_print_lines > 0 && g.lines_printed >= g.max_print_lines {
@@ -633,21 +638,21 @@ func (g *Grep) Reader2(r io.Reader, name string) {
 			}
 			//line := buf[lineStart:lineEnd]
 			preMatchStr := buf[lineStart:matchStart]
-			matchStr := buf[matchStart: matchEnd]
+			matchStr := buf[matchStart:matchEnd]
 			postMatchStr := buf[matchEnd:lineEnd]
-			if g.addLinesCount > 0 {
-				idx := findNL(buf, lineStart, false, g.addLinesCount)
+			if g.Params.addLinesCount > 0 {
+				idx := findNL(buf, lineStart, false, g.Params.addLinesCount)
 				if idx != 0 {
 					idx++
 				}
 				preMatchStr = buf[idx:matchStart]
-				idx = findNL(buf, matchEnd, true, g.addLinesCount)
-				postMatchStr = buf[matchEnd:idx + 1]
+				idx = findNL(buf, matchEnd, true, g.Params.addLinesCount)
+				postMatchStr = buf[matchEnd : idx+1]
 			}
 			switch {
-			case g.C:
+			case g.Params.C:
 				count++
-			case g.N:
+			case g.Params.N:
 				fmt.Fprintf(g.Stdout, "%s%d:%s%s%s", prefix, lineno, preMatchStr, aurora.Bold(matchStr), postMatchStr)
 				g.lines_printed++
 				printedForFile++
@@ -688,7 +693,7 @@ func (g *Grep) Reader2(r io.Reader, name string) {
 			break
 		}
 	}
-	if g.C && count > 0 {
+	if g.Params.C && count > 0 {
 		fmt.Fprintf(g.Stdout, "%s: %d\n", name, count)
 		g.lines_printed++
 		if g.max_print_lines > 0 && g.lines_printed >= g.max_print_lines {
@@ -707,7 +712,7 @@ func (g *Grep) UniReader(r io.Reader, name string) {
 	}
 	var (
 		buf                  = g.buf[:0]
-		needLineno           = g.N
+		needLineno           = g.Params.N
 		lineno               = 1
 		count                = 0
 		prefix               = ""
@@ -716,10 +721,10 @@ func (g *Grep) UniReader(r io.Reader, name string) {
 		outSep               = '\n'
 		printedForFile int64 = 0
 	)
-	if !g.H {
+	if !g.Params.H {
 		prefix = name + ":"
 	}
-	if g.L && g.Z {
+	if g.Params.L && g.Params.Z {
 		outSep = '\x00'
 	}
 	for {
@@ -734,7 +739,7 @@ func (g *Grep) UniReader(r io.Reader, name string) {
 		chunkStart := 0
 		for chunkStart < end {
 			var matchStart, matchEnd int
-			if g.useRe2 {
+			if g.Params.useRe2 {
 				matchStart, matchEnd = g.Regexp.MatchRe2(buf[chunkStart:end], beginText, endText)
 			} else {
 				matchStart, matchEnd = g.Regexp.MatchDef(buf[chunkStart:end], beginText, endText)
@@ -749,7 +754,7 @@ func (g *Grep) UniReader(r io.Reader, name string) {
 			//	break
 			//}
 			g.Match = true
-			if g.L {
+			if g.Params.L {
 				fmt.Fprintf(g.Stdout, "%s%c", name, outSep)
 				g.lines_printed++
 				if g.max_print_lines > 0 && g.lines_printed >= g.max_print_lines {
@@ -771,21 +776,21 @@ func (g *Grep) UniReader(r io.Reader, name string) {
 			}
 			//line := buf[lineStart:lineEnd]
 			preMatchStr := buf[lineStart:matchStart]
-			matchStr := buf[matchStart: matchEnd]
+			matchStr := buf[matchStart:matchEnd]
 			postMatchStr := buf[matchEnd:lineEnd]
-			if g.addLinesCount > 0 {
-				idx := findNL(buf, lineStart, false, g.addLinesCount)
+			if g.Params.addLinesCount > 0 {
+				idx := findNL(buf, lineStart, false, g.Params.addLinesCount)
 				if idx != 0 {
 					idx++
 				}
 				preMatchStr = buf[idx:matchStart]
-				idx = findNL(buf, matchEnd, true, g.addLinesCount)
-				postMatchStr = buf[matchEnd:idx + 1]
+				idx = findNL(buf, matchEnd, true, g.Params.addLinesCount)
+				postMatchStr = buf[matchEnd : idx+1]
 			}
 			switch {
-			case g.C:
+			case g.Params.C:
 				count++
-			case g.N:
+			case g.Params.N:
 				fmt.Fprintf(g.Stdout, "%s%d:%s%s%s", prefix, lineno, preMatchStr, aurora.Bold(matchStr), postMatchStr)
 				g.lines_printed++
 				printedForFile++
@@ -826,7 +831,7 @@ func (g *Grep) UniReader(r io.Reader, name string) {
 			break
 		}
 	}
-	if g.C && count > 0 {
+	if g.Params.C && count > 0 {
 		fmt.Fprintf(g.Stdout, "%s: %d\n", name, count)
 		g.lines_printed++
 		if g.max_print_lines > 0 && g.lines_printed >= g.max_print_lines {
