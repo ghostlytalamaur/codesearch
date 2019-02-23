@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ghostlytalamaur/codesearch/grep"
 	"github.com/ghostlytalamaur/codesearch/index"
 	"github.com/ghostlytalamaur/codesearch/regexp"
 	"github.com/ghostlytalamaur/codesearch/utils"
@@ -82,26 +83,23 @@ func usage() {
 
 // CSearchParams - params for code search
 type CSearchParams struct {
-	grepParams                 regexp.GrepParams
-	fFlag                      string // ;           = flag.String("f", "", "search only files with names matching this regexp")
-	fExcludeFlag               string // ; //     = flag.String("fexclude", "", "search only files with names not matching this regexp")
-	iFlag                      bool   //           = flag.Bool("i", false, "case-insensitive search")
-	bruteFlag                  bool   //      = flag.Bool("brute", false, "brute force - search all files in index")
-	cpuProfile                 string //     = flag.String("cpuprofile", "", "write cpu profile to this file")
-	indexPath                  string //      = flag.String("indexpath", "", "specifies index path")
-	maxCount                   int64  //       = flag.Int64("m", 0, "specified maximum number of search results")
-	maxCountPerFile            int64  // = flag.Int64("M", 0, "specified maximum number of search results per file")
-	filePathsStr               string //   = flag.String("filepaths", "", "search only files in specified paths separated by |")
-	ignorePathsCase            bool   //  = flag.Bool("ignorepathscase", false, "Ignore case of paths specified by filepaths param")
-	extStatus                  bool   //      = flag.Bool("extstatus", false, "Print additional status info")
-	noMultiThread              bool
-	pattern                    string
-	printFileNamesOnly         bool // L flag - print file names only
-	printNullTerminatedStrings bool // 0 flag - print matches separated by \0
-	printMatchesCount          bool // C flag - print count of matches
-	printLineNumbers           bool // N flag - print line numbers
-	printWithoutFileName       bool // H flag - do not print file names
-	verboseFlag                bool //     = flag.Bool("verbose", false, "print extra information")
+	grepParams        grep.Params
+	formatParams      grep.ResultFormatParams
+	fFlag             string // ;           = flag.String("f", "", "search only files with names matching this regexp")
+	fExcludeFlag      string // ; //     = flag.String("fexclude", "", "search only files with names not matching this regexp")
+	iFlag             bool   //           = flag.Bool("i", false, "case-insensitive search")
+	bruteFlag         bool   //      = flag.Bool("brute", false, "brute force - search all files in index")
+	cpuProfile        string //     = flag.String("cpuprofile", "", "write cpu profile to this file")
+	indexPath         string //      = flag.String("indexpath", "", "specifies index path")
+	maxCount          int64  //       = flag.Int64("m", 0, "specified maximum number of search results")
+	maxCountPerFile   int64  // = flag.Int64("M", 0, "specified maximum number of search results per file")
+	filePathsStr      string //   = flag.String("filepaths", "", "search only files in specified paths separated by |")
+	ignorePathsCase   bool   //  = flag.Bool("ignorepathscase", false, "Ignore case of paths specified by filepaths param")
+	extStatus         bool   //      = flag.Bool("extstatus", false, "Print additional status info")
+	noMultiThread     bool
+	pattern           string
+	printMatchesCount bool // C flag - print count of matches
+	verboseFlag       bool //     = flag.Bool("verbose", false, "print extra information")
 }
 
 // AddFlags register command line flags to parse
@@ -119,12 +117,8 @@ func (p *CSearchParams) addFlags() {
 	flag.BoolVar(&p.ignorePathsCase, "ignorepathscase", false, "Ignore case of paths specified by filepaths param")
 	flag.BoolVar(&p.extStatus, "extstatus", false, "Print additional status info")
 	flag.BoolVar(&p.noMultiThread, "nomultithread", false, "use multiple threads")
-
-	flag.BoolVar(&p.printFileNamesOnly, "l", false, "list matching files only")
-	flag.BoolVar(&p.printNullTerminatedStrings, "0", false, "list filename matches separated by NUL ('\\0') character. Requires -l option")
 	flag.BoolVar(&p.printMatchesCount, "c", false, "print match counts only")
-	flag.BoolVar(&p.printLineNumbers, "n", false, "show line numbers")
-	flag.BoolVar(&p.printWithoutFileName, "h", false, "omit file names")
+	p.formatParams.AddFlags()
 	p.grepParams.AddFlags()
 }
 
@@ -230,9 +224,9 @@ func produceFiles(ctx context.Context, params *CSearchParams, buffer int) <-chan
 }
 
 func searchWorker(ctx context.Context, params *CSearchParams,
-	files <-chan string, output chan<- regexp.GrepResult) bool {
+	files <-chan string, output chan<- grep.Result) bool {
 	localRe, _ := regexp.Compile(params.pattern)
-	localGrep := regexp.Grep{
+	localGrep := grep.Grep{
 		Params: params.grepParams,
 		Regexp: localRe,
 	}
@@ -270,30 +264,10 @@ func searchWorker(ctx context.Context, params *CSearchParams,
 	return somethingFound
 }
 
-func formatResult(params *CSearchParams, r *regexp.GrepResult) string {
-	var text string
-	if params.printFileNamesOnly {
-		if params.printNullTerminatedStrings {
-			text = fmt.Sprintf("%s\x00", r.FileName)
-		} else {
-			text = fmt.Sprintf("%s\n", r.FileName)
-		}
-	} else {
-		if !params.printWithoutFileName {
-			text = r.FileName + ":"
-		}
-		if params.printLineNumbers {
-			text = fmt.Sprintf("%s%d:", text, r.LineNum)
-		}
-		text = fmt.Sprintf("%s%s", text, r.Text)
-	}
-	return text
-}
-
 func performSearch(ctx context.Context, params *CSearchParams, workersCount int) bool {
 	lctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
-	out := make(chan regexp.GrepResult, 1000)
+	out := make(chan grep.Result, 1000)
 	wg.Add(1)
 	go func() {
 		defer close(out)
@@ -317,7 +291,7 @@ func performSearch(ctx context.Context, params *CSearchParams, workersCount int)
 		for r := range out {
 			count++
 			if params.maxCount <= 0 || count <= params.maxCount {
-				fmt.Fprintf(utils.GetConsoleWriter().Out(), "%s", formatResult(params, &r))
+				fmt.Fprintf(utils.GetConsoleWriter().Out(), "%s", r.Format(&params.formatParams))
 			} else {
 				log.Trace("Global limit achieved.")
 				break
@@ -360,8 +334,9 @@ func main() {
 	flag.Parse()
 	args := flag.Args()
 
-	if len(args) != 1 || (params.printFileNamesOnly && params.printMatchesCount) ||
-		(params.printFileNamesOnly && params.maxCountPerFile > 0) || (params.printMatchesCount && params.maxCountPerFile > 0) {
+	if len(args) != 1 || (params.formatParams.PrintFileNamesOnly && params.printMatchesCount) ||
+		(params.formatParams.PrintFileNamesOnly && params.maxCountPerFile > 0) ||
+		(params.printMatchesCount && params.maxCountPerFile > 0) {
 		usage()
 	}
 	params.pattern = "(?m)" + args[0]

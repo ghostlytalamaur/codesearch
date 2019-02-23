@@ -66,6 +66,8 @@ func (r *Regexp) Match(b []byte, beginText, endText bool) (end int) {
 	return r.m.match(b, beginText, endText)
 }
 
+var nl = []byte{'\n'}
+
 func (r *Regexp) MatchDef(b []byte, beginText, endText bool) (start, end int) {
 	start = 1
 	end = -1

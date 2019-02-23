@@ -7,13 +7,15 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"runtime/pprof"
 
+	"github.com/ghostlytalamaur/codesearch/grep"
 	"github.com/ghostlytalamaur/codesearch/regexp"
+	log "github.com/sirupsen/logrus"
 )
 
 var usageMessage = `usage: cgrep [-c] [-h] [-i] [-l [-0]] [-n] regexp [file...]
@@ -47,18 +49,25 @@ var (
 )
 
 func main() {
-	var g regexp.Grep
-	var grepParams regexp.GrepParams
+	var g grep.Grep
+	var grepParams grep.Params
+	var formatParams grep.ResultFormatParams
 	grepParams.AddFlags()
+	formatParams.AddFlags()
 	g.Params = grepParams
-	g.Stdout = os.Stdout
-	g.Stderr = os.Stderr
 	flag.Usage = usage
 	flag.Parse()
 	args := flag.Args()
 	if len(args) == 0 {
 		flag.Usage()
 	}
+
+	log.SetLevel(log.ErrorLevel)
+	log.SetFormatter(&log.TextFormatter{
+		FullTimestamp:          true,
+		DisableLevelTruncation: true,
+		ForceColors:            true,
+	})
 
 	if *cpuProfile != "" {
 		f, err := os.Create(*cpuProfile)
@@ -79,14 +88,21 @@ func main() {
 		log.Fatal(err)
 	}
 	g.Regexp = re
+	var matched bool
 	if len(args) == 1 {
-		g.Reader2(os.Stdin, "<standard input>")
+		for r := range g.Reader(context.Background(), "<standard input>", os.Stdin) {
+			fmt.Print(r.Format(&formatParams))
+			matched = true
+		}
 	} else {
 		for _, arg := range args[1:] {
-			g.File(arg)
+			for r := range g.File(context.Background(), arg) {
+				fmt.Print(r.Format(&formatParams))
+				matched = true
+			}
 		}
 	}
-	if !g.Match {
+	if !matched {
 		os.Exit(1)
 	}
 }
