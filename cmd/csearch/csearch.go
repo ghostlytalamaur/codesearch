@@ -222,17 +222,13 @@ func limitResults(ctx context.Context, wg *sync.WaitGroup,
 	go func() {
 		defer wg.Done()
 		var count int64
+		wasCancelled := false
 		for r := range res {
-			select {
-			case <-lctx.Done():
-				return
-			default:
-				if maxElements <= 0 || atomic.AddInt64(&count, 1) <= maxElements {
-					results <- r
-				} else {
-					cancel()
-					return
-				}
+			if maxElements <= 0 || atomic.AddInt64(&count, 1) <= maxElements {
+				results <- r
+			} else if !wasCancelled {
+				cancel()
+				wasCancelled = true
 			}
 		}
 	}()
@@ -332,20 +328,24 @@ func performSearch(ctx context.Context, workersCount int, params *CSearchParams,
 		err: &prefixWriter{utils.GetConsoleWriter().Err()},
 	}
 
+	var wg sync.WaitGroup
+	var limiterWg sync.WaitGroup
 	results := make(chan regexp.GrepResult, 1000)
+	lctx, limiter := limitResults(ctx, &limiterWg, results, params.maxCount)
 	printDone := printResults(ctx, params, console.Out(), results)
 	var matches int32
-	var wg sync.WaitGroup
 	for i := 0; i < workersCount; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if searchWorker(ctx, params, console, files, results) {
+			if searchWorker(lctx, params, console, files, limiter) {
 				atomic.AddInt32(&matches, 1)
 			}
 		}()
 	}
 	wg.Wait()
+	close(limiter)
+	limiterWg.Wait()
 	close(results)
 	<-printDone
 	return matches > 1

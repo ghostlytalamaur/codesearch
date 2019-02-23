@@ -757,7 +757,11 @@ func (g *Grep) UniReader2(ctx context.Context, r io.Reader, name string, printer
 
 			match = true
 			printer.countLineNums(buf[chunkStart:matchStart])
-			output <- printer.makeResult(buf, matchStart, matchEnd)
+			select {
+			case <-ctx.Done():
+				return match
+			case output <- printer.makeResult(buf, matchStart, matchEnd):
+			}
 			if nlIndex := bytes.Index(buf[matchEnd:], nl); nlIndex >= 0 {
 				chunkStart = nlIndex + 1 + matchEnd
 			} else {
