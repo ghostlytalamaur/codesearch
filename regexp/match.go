@@ -17,6 +17,8 @@ import (
 	"regexp/syntax"
 	"sort"
 
+	log "github.com/sirupsen/logrus"
+
 	"github.com/ghostlytalamaur/codesearch/sparse"
 	"github.com/logrusorgru/aurora"
 )
@@ -355,22 +357,13 @@ func isWordByte(c int) bool {
 
 // Grep - TODO
 type Grep struct {
-	Regexp *Regexp   // regexp to search for
-	Stdout io.Writer // output target
-	Stderr io.Writer // error target
+	Regexp *Regexp // regexp to search for
 	Params GrepParams
-
-	printer              *grepResultPrinter
-	Done                 bool
-	lines_printed        int64 // running match count
-	max_print_lines      int64 // Max match count
-	maxPrintLinesPerFile int64 // Max match count
-
-	Match bool
 
 	buf []byte
 }
 
+// GrepResult represend one match
 type GrepResult struct {
 	FileName string
 	LineNum  int
@@ -379,51 +372,31 @@ type GrepResult struct {
 
 // GrepParams params for Grep
 type GrepParams struct {
-	L             bool // L flag - print file names only
-	Z             bool // 0 flag - print matches separated by \0
-	C             bool // C flag - print count of matches
-	N             bool // N flag - print line numbers
-	H             bool // H flag - do not print file names
 	useRe2        bool // Use Go regexp engine
 	addLinesCount uint
-	PrinterParams PrinterParams
 }
 
 // AddFlags : Add flags to command line parser
 func (p *GrepParams) AddFlags() {
 	flag.BoolVar(&p.useRe2, "re2", false, "Use Go regexp engine")
-	p.PrinterParams.addFlags()
+	flag.UintVar(&p.addLinesCount, "addlines", 0, "print additional lines")
 }
 
 // File - start search in file
-func (g *Grep) File(ctx context.Context, name string, output chan<- GrepResult) bool {
-	f, err := os.Open(name)
-	if err != nil {
-		fmt.Fprintf(g.Stderr, "%s\n", err)
-		return false
-	}
-	defer f.Close()
-	if g.printer == nil {
-		g.printer = &grepResultPrinter{
-			Output: g.Stdout,
-			Params: g.Params.PrinterParams,
+func (g *Grep) File(ctx context.Context, name string) <-chan GrepResult {
+	out := make(chan GrepResult)
+	go func() {
+		defer close(out)
+		f, err := os.Open(name)
+		if err != nil {
+			log.Errorf("%s\n", err)
+			return
 		}
-	}
-	return g.UniReader2(ctx, f, name, g.printer, output)
-}
+		defer f.Close()
+		g.uniReader2(ctx, f, name, out)
+	}()
 
-func (g *Grep) LimitPrintCount(globalLimit int64, fileLimit int64) {
-	g.Done = false
-	g.lines_printed = 0
-	g.max_print_lines = globalLimit
-	if g.max_print_lines < 0 {
-		g.max_print_lines = 0
-	}
-	g.maxPrintLinesPerFile = fileLimit
-	if g.maxPrintLinesPerFile < 0 {
-		g.maxPrintLinesPerFile = 0
-	}
-	g.Params.PrinterParams.PrintedLinesLimit = fileLimit
+	return out
 }
 
 var nl = []byte{'\n'}
@@ -452,285 +425,88 @@ func findNL(buf []byte, startpos int, isDirect bool, skipLines uint) int {
 		if ch == '\n' {
 			if skipLines == 0 {
 				return i
-			} else {
-				skipLines--
 			}
+			skipLines--
 		}
 	}
 	if isDirect {
 		return 0
-	} else {
-		return len(buf)
 	}
+	return len(buf)
 }
 
-func (g *Grep) UniReader(r io.Reader, name string) {
-	if g.Done {
-		return
-	}
-	if g.buf == nil {
-		g.buf = make([]byte, 1<<20)
-	}
-	var (
-		buf                  = g.buf[:0]
-		needLineno           = g.Params.N
-		lineno               = 1
-		count                = 0
-		prefix               = ""
-		beginText            = true
-		endText              = false
-		outSep               = '\n'
-		printedForFile int64 = 0
-	)
-	if !g.Params.H {
-		prefix = name + ":"
-	}
-	if g.Params.L && g.Params.Z {
-		outSep = '\x00'
-	}
-	for {
-		n, err := io.ReadFull(r, buf[len(buf):cap(buf)])
-		buf = buf[:len(buf)+n]
-		end := len(buf)
-		if err == nil {
-			end = bytes.LastIndex(buf, nl) + 1
-		} else {
-			endText = true
-		}
-		chunkStart := 0
-		for chunkStart < end {
-			var matchStart, matchEnd int
-			if g.Params.useRe2 {
-				matchStart, matchEnd = g.Regexp.MatchRe2(buf[chunkStart:end], beginText, endText)
-			} else {
-				matchStart, matchEnd = g.Regexp.MatchDef(buf[chunkStart:end], beginText, endText)
-			}
-			matchStart += chunkStart
-			matchEnd += chunkStart
-			if matchStart > matchEnd {
-				break
-			}
-			beginText = false
-			//if m1 < chunkStart {
-			//	break
-			//}
-			g.Match = true
-			if g.Params.L {
-				fmt.Fprintf(g.Stdout, "%s%c", name, outSep)
-				g.lines_printed++
-				if g.max_print_lines > 0 && g.lines_printed >= g.max_print_lines {
-					g.Done = true
-				}
-				return
-			}
-			lineStart := bytes.LastIndex(buf[chunkStart:matchStart], nl) + 1 + chunkStart
-			lineEnd := len(buf)
-			if nlIndex := bytes.Index(buf[matchEnd:], nl); nlIndex >= 0 {
-				lineEnd = nlIndex + 1 + matchEnd
-			}
-			//lineEnd := matchEnd + 1
-			if lineEnd > end {
-				lineEnd = end
-			}
-			if needLineno {
-				lineno += countNL(buf[chunkStart:lineStart])
-			}
-			//line := buf[lineStart:lineEnd]
-			preMatchStr := buf[lineStart:matchStart]
-			matchStr := buf[matchStart:matchEnd]
-			postMatchStr := buf[matchEnd:lineEnd]
-			if g.Params.addLinesCount > 0 {
-				idx := findNL(buf, lineStart, false, g.Params.addLinesCount)
-				if idx != 0 {
-					idx++
-				}
-				preMatchStr = buf[idx:matchStart]
-				idx = findNL(buf, matchEnd, true, g.Params.addLinesCount)
-				postMatchStr = buf[matchEnd : idx+1]
-			}
-			switch {
-			case g.Params.C:
-				count++
-			case g.Params.N:
-				fmt.Fprintf(g.Stdout, "%s%d:%s%s%s", prefix, lineno, preMatchStr, aurora.Bold(matchStr), postMatchStr)
-				g.lines_printed++
-				printedForFile++
-				if g.max_print_lines > 0 && g.lines_printed >= g.max_print_lines {
-					g.Done = true
-					return
-				}
-				if g.maxPrintLinesPerFile > 0 && printedForFile >= g.maxPrintLinesPerFile {
-					return
-				}
-			default:
-				fmt.Fprintf(g.Stdout, "%s%s%s%s", prefix, preMatchStr, aurora.Bold(matchStr), postMatchStr)
-				g.lines_printed++
-				printedForFile++
-				if g.max_print_lines > 0 && g.lines_printed >= g.max_print_lines {
-					g.Done = true
-					return
-				}
-				if g.maxPrintLinesPerFile > 0 && printedForFile >= g.maxPrintLinesPerFile {
-					return
-				}
-			}
-			if needLineno {
-				lineno++
-			}
-			chunkStart = lineEnd
-		}
-		if needLineno && err == nil {
-			lineno += countNL(buf[chunkStart:end])
-		}
-		n = copy(buf, buf[end:])
-		buf = buf[:n]
-		if len(buf) == 0 && err != nil {
-			if err != io.EOF && err != io.ErrUnexpectedEOF {
-				fmt.Fprintf(g.Stderr, "%s: %v\n", name, err)
-				// error lines do not count towards max lines printed
-			}
-			break
-		}
-	}
-	if g.Params.C && count > 0 {
-		fmt.Fprintf(g.Stdout, "%s: %d\n", name, count)
-		g.lines_printed++
-		if g.max_print_lines > 0 && g.lines_printed >= g.max_print_lines {
-			g.Done = true
-			return
-		}
-	}
+type grepResultMaker struct {
+	params   *GrepParams
+	fileName string
+	lineNum  int
 }
 
-type grepResultPrinter struct {
-	Output io.Writer
-	Params PrinterParams
-
-	// cached variables
-	lineNum      int
-	matchesCount int
-	fileName     string
-	linesPrinted int64
-}
-
-type PrinterParams struct {
-	PrintFileNamesOnly         bool // L flag - print file names only
-	PrintNullTerminatedStrings bool // 0 flag - print matches separated by \0
-	PrintMatchesCount          bool // C flag - print count of matches
-	PrintLineNumbers           bool // N flag - print line numbers
-	PrintFileName              bool // H flag - do not print file names
-	AddLinesCount              uint
-	PrintedLinesLimit          int64
-}
-
-func (p *PrinterParams) addFlags() {
-	flag.BoolVar(&p.PrintFileNamesOnly, "l", false, "list matching files only")
-	flag.BoolVar(&p.PrintNullTerminatedStrings, "0", false, "list filename matches separated by NUL ('\\0') character. Requires -l option")
-	flag.BoolVar(&p.PrintMatchesCount, "c", false, "print match counts only")
-	flag.BoolVar(&p.PrintLineNumbers, "n", false, "show line numbers")
-	flag.BoolVar(&p.PrintFileName, "h", false, "omit file names")
-	flag.UintVar(&p.AddLinesCount, "addlines", 0, "print additional lines")
-}
-
-func (p *grepResultPrinter) makeResult(buffer []byte, start int, end int) GrepResult {
+func (p *grepResultMaker) makeResult(buffer []byte, chunkStart, start int, end int) (res GrepResult, lineEnd int) {
+	p.lineNum += countNL(buffer[chunkStart:start])
 	var text string
-	if p.Params.PrintFileNamesOnly {
-		if p.Params.PrintNullTerminatedStrings {
-			text = fmt.Sprintf("%s%s", p.fileName, "\x00")
-		} else {
-			text = fmt.Sprintf("%s%s", p.fileName, "\n")
-		}
-	} else {
+	lineStart := bytes.LastIndex(buffer[:start], nl) + 1
+	lineEnd = len(buffer)
 
-		lineStart := bytes.LastIndex(buffer[:start], nl) + 1
-		lineEnd := len(buffer)
-
-		if nlIndex := bytes.Index(buffer[end:], nl); nlIndex >= 0 {
-			lineEnd = nlIndex + 1 + end
-		}
-		if lineEnd > len(buffer) {
-			lineEnd = len(buffer)
-
-		}
-
-		preMatchStr := buffer[lineStart:start]
-		matchStr := buffer[start:end]
-		postMatchStr := buffer[end:lineEnd]
-
-		if p.Params.AddLinesCount > 0 {
-			idx := findNL(buffer, lineStart, false, p.Params.AddLinesCount)
-			if idx != 0 {
-				idx++
-			}
-			preMatchStr = buffer[idx:start]
-			idx = findNL(buffer, end, true, p.Params.AddLinesCount)
-			postMatchStr = buffer[end : idx+1]
-		}
-		text = fmt.Sprintf("%s%s%s", preMatchStr, aurora.Bold(matchStr), postMatchStr)
+	if nlIndex := bytes.Index(buffer[end:], nl); nlIndex >= 0 {
+		lineEnd = nlIndex + 1 + end
+	}
+	if lineEnd > len(buffer) {
+		lineEnd = len(buffer)
 	}
 
+	preMatchStr := buffer[lineStart:start]
+	matchStr := buffer[start:end]
+	postMatchStr := buffer[end:lineEnd]
+
+	if p.params.addLinesCount > 0 {
+		idx := findNL(buffer, lineStart, false, p.params.addLinesCount)
+		if idx != 0 {
+			idx++
+		}
+		preMatchStr = buffer[idx:start]
+		idx = findNL(buffer, end, true, p.params.addLinesCount)
+		postMatchStr = buffer[end : idx+1]
+	}
+	text = fmt.Sprintf("%s%s%s", preMatchStr, aurora.Bold(matchStr), postMatchStr)
 	return GrepResult{
 		FileName: p.fileName,
 		LineNum:  p.lineNum,
 		Text:     text,
-	}
-}
-
-func (p *grepResultPrinter) countLineNums(buffer []byte) {
-	if p.Params.PrintLineNumbers {
-		p.lineNum += countNL(buffer)
-	}
-}
-
-func (p *grepResultPrinter) startSearch(fileName string) {
-	p.lineNum = 1
-	p.matchesCount = 0
-	p.linesPrinted = 0
-	p.fileName = fileName
-}
-
-func (p *grepResultPrinter) endSearch() {
-	if p.Params.PrintMatchesCount && p.matchesCount > 0 {
-		fmt.Fprintf(p.Output, "%s: %d\n", p.fileName, p.matchesCount)
-		p.linesPrinted++
-	}
+	}, lineEnd
 }
 
 func (g *Grep) match(buf []byte, beginText bool, endText bool) (a, b int) {
 	if g.Params.useRe2 {
 		return g.Regexp.MatchRe2(buf, beginText, endText)
-	} else {
-		return g.Regexp.MatchDef(buf, beginText, endText)
 	}
+	return g.Regexp.MatchDef(buf, beginText, endText)
 }
 
 func (g *Grep) isDone(ctx context.Context, format string, a ...interface{}) bool {
 	select {
 	case <-ctx.Done():
-		fmt.Fprintf(g.Stderr, format, a)
+		log.Tracef(format, a)
 		return true
 	default:
 		return false
 	}
 }
 
-func inc(a int, b int, delta int) (int, int) {
-	return a + delta, b + delta
-}
-
-func (g *Grep) UniReader2(ctx context.Context, r io.Reader, name string, printer *grepResultPrinter,
-	output chan<- GrepResult) (match bool) {
-	match = false
+func (g *Grep) uniReader2(ctx context.Context, r io.Reader, name string, output chan<- GrepResult) {
 	if g.buf == nil {
 		g.buf = make([]byte, 1<<20)
 	}
+
+	maker := grepResultMaker{
+		params:   &g.Params,
+		fileName: name,
+	}
+
 	var (
 		buf       = g.buf[:0]
 		beginText = true
 		endText   = false
 	)
-	printer.startSearch(name)
-	defer printer.endSearch()
 	for {
 		n, err := io.ReadFull(r, buf[len(buf):cap(buf)])
 		buf = buf[:len(buf)+n]
@@ -743,7 +519,7 @@ func (g *Grep) UniReader2(ctx context.Context, r io.Reader, name string, printer
 		chunkStart := 0
 		for chunkStart < end {
 			if g.isDone(ctx, "Search cancelled. File: %s\n", name) {
-				return match
+				return
 			}
 			matchStart, matchEnd := g.match(buf[chunkStart:end], beginText, endText)
 			if matchStart > matchEnd {
@@ -752,38 +528,30 @@ func (g *Grep) UniReader2(ctx context.Context, r io.Reader, name string, printer
 
 			matchStart, matchEnd = matchStart+chunkStart, matchEnd+chunkStart
 			if g.isDone(ctx, "Search cancelled. File: %s\n", name) {
-				return match
+				return
 			}
 
-			match = true
-			printer.countLineNums(buf[chunkStart:matchStart])
+			r, lineEnd := maker.makeResult(buf, chunkStart, matchStart, matchEnd)
 			select {
 			case <-ctx.Done():
-				return match
-			case output <- printer.makeResult(buf, matchStart, matchEnd):
+				return
+			case output <- r:
 			}
-			if nlIndex := bytes.Index(buf[matchEnd:], nl); nlIndex >= 0 {
-				chunkStart = nlIndex + 1 + matchEnd
-			} else {
-				chunkStart = end
-			}
+			chunkStart = lineEnd
 			if chunkStart > end {
 				chunkStart = end
 			}
 		}
 		if err == nil {
-			printer.countLineNums(buf[chunkStart:end])
+			maker.lineNum += countNL(buf[chunkStart:end])
 		}
 		n = copy(buf, buf[end:])
 		buf = buf[:n]
 		if len(buf) == 0 && err != nil {
 			if err != io.EOF && err != io.ErrUnexpectedEOF {
-				fmt.Fprintf(g.Stderr, "%s: %v\n", name, err)
-				// error lines do not count towards max lines printed
+				log.Errorf("%s: %v\n", name, err)
 			}
 			break
 		}
 	}
-
-	return match
 }

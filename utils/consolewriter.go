@@ -62,8 +62,10 @@ func GetConsoleWriter() ConsoleWriter {
 //
 // Must be last call in application.
 func DoneConsoleWriter() {
-	done <- true
-	wg.Wait()
+	if done != nil {
+		done <- true
+		wg.Wait()
+	}
 }
 
 type consoleWriter struct {

@@ -10,18 +10,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
-	"log"
 	"os"
 	"runtime/pprof"
 	"strings"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/ghostlytalamaur/codesearch/index"
 	"github.com/ghostlytalamaur/codesearch/regexp"
 	"github.com/ghostlytalamaur/codesearch/utils"
+	log "github.com/sirupsen/logrus"
 )
 
 const usageMessage = `usage: csearch [options] regexp
@@ -85,23 +82,29 @@ func usage() {
 
 // CSearchParams - params for code search
 type CSearchParams struct {
-	fFlag           string // ;           = flag.String("f", "", "search only files with names matching this regexp")
-	fExcludeFlag    string // ; //     = flag.String("fexclude", "", "search only files with names not matching this regexp")
-	iFlag           bool   //           = flag.Bool("i", false, "case-insensitive search")
-	verboseFlag     bool   //     = flag.Bool("verbose", false, "print extra information")
-	bruteFlag       bool   //      = flag.Bool("brute", false, "brute force - search all files in index")
-	cpuProfile      string //     = flag.String("cpuprofile", "", "write cpu profile to this file")
-	indexPath       string //      = flag.String("indexpath", "", "specifies index path")
-	maxCount        int64  //       = flag.Int64("m", 0, "specified maximum number of search results")
-	maxCountPerFile int64  // = flag.Int64("M", 0, "specified maximum number of search results per file")
-	filePathsStr    string //   = flag.String("filepaths", "", "search only files in specified paths separated by |")
-	ignorePathsCase bool   //  = flag.Bool("ignorepathscase", false, "Ignore case of paths specified by filepaths param")
-	extStatus       bool   //      = flag.Bool("extstatus", false, "Print additional status info")
-	multithread     bool
-	pattern         string
-	grepParams      regexp.GrepParams
+	grepParams                 regexp.GrepParams
+	fFlag                      string // ;           = flag.String("f", "", "search only files with names matching this regexp")
+	fExcludeFlag               string // ; //     = flag.String("fexclude", "", "search only files with names not matching this regexp")
+	iFlag                      bool   //           = flag.Bool("i", false, "case-insensitive search")
+	bruteFlag                  bool   //      = flag.Bool("brute", false, "brute force - search all files in index")
+	cpuProfile                 string //     = flag.String("cpuprofile", "", "write cpu profile to this file")
+	indexPath                  string //      = flag.String("indexpath", "", "specifies index path")
+	maxCount                   int64  //       = flag.Int64("m", 0, "specified maximum number of search results")
+	maxCountPerFile            int64  // = flag.Int64("M", 0, "specified maximum number of search results per file")
+	filePathsStr               string //   = flag.String("filepaths", "", "search only files in specified paths separated by |")
+	ignorePathsCase            bool   //  = flag.Bool("ignorepathscase", false, "Ignore case of paths specified by filepaths param")
+	extStatus                  bool   //      = flag.Bool("extstatus", false, "Print additional status info")
+	noMultiThread              bool
+	pattern                    string
+	printFileNamesOnly         bool // L flag - print file names only
+	printNullTerminatedStrings bool // 0 flag - print matches separated by \0
+	printMatchesCount          bool // C flag - print count of matches
+	printLineNumbers           bool // N flag - print line numbers
+	printWithoutFileName       bool // H flag - do not print file names
+	verboseFlag                bool //     = flag.Bool("verbose", false, "print extra information")
 }
 
+// AddFlags register command line flags to parse
 func (p *CSearchParams) addFlags() {
 	flag.StringVar(&p.fFlag, "f", "", "search only files with names matching this regexp")
 	flag.StringVar(&p.fExcludeFlag, "fexclude", "", "search only files with names not matching this regexp")
@@ -115,44 +118,72 @@ func (p *CSearchParams) addFlags() {
 	flag.StringVar(&p.filePathsStr, "filepaths", "", "search only files in specified paths separated by |")
 	flag.BoolVar(&p.ignorePathsCase, "ignorepathscase", false, "Ignore case of paths specified by filepaths param")
 	flag.BoolVar(&p.extStatus, "extstatus", false, "Print additional status info")
-	flag.BoolVar(&p.multithread, "multithread", false, "use multiple threads")
+	flag.BoolVar(&p.noMultiThread, "nomultithread", false, "use multiple threads")
+
+	flag.BoolVar(&p.printFileNamesOnly, "l", false, "list matching files only")
+	flag.BoolVar(&p.printNullTerminatedStrings, "0", false, "list filename matches separated by NUL ('\\0') character. Requires -l option")
+	flag.BoolVar(&p.printMatchesCount, "c", false, "print match counts only")
+	flag.BoolVar(&p.printLineNumbers, "n", false, "show line numbers")
+	flag.BoolVar(&p.printWithoutFileName, "h", false, "omit file names")
 	p.grepParams.AddFlags()
 }
 
-func selectFiles(re *regexp.Regexp, ix *index.Index, params *CSearchParams) (post []uint32, err error) {
-	q := index.RegexpQuery(re.Syntax)
-	if params.verboseFlag {
-		log.Printf("query: %s\n", q)
-	}
-
-	if params.bruteFlag {
-		post = ix.PostingQuery(&index.Query{Op: index.QAll})
-	} else {
-		post = ix.PostingQuery(q)
-	}
-
-	if params.verboseFlag {
-		log.Printf("post query identified %d possible files\n", len(post))
-	}
-
-	var fre *regexp.Regexp
-	if params.fFlag != "" {
-		fre, err = regexp.Compile(params.fFlag)
+func prepareIndex(params *CSearchParams) (*index.Index, error) {
+	if params.indexPath != "" {
+		err := os.Setenv("CSEARCHINDEX", params.indexPath)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	var fExcludeRe *regexp.Regexp
-	if params.fExcludeFlag != "" {
-		fExcludeRe, err = regexp.Compile(params.fExcludeFlag)
-		if err != nil {
-			return nil, err
-		}
-	}
+	ix := index.Open(index.File())
+	ix.Verbose = params.verboseFlag
+	return ix, nil
+}
 
-	if fre != nil || fExcludeRe != nil || params.filePathsStr != "" {
-		fnames := make([]uint32, 0, len(post))
+func produceFiles(ctx context.Context, params *CSearchParams, buffer int) <-chan string {
+	files := make(chan string, buffer)
+	go func() {
+		defer close(files)
+
+		re, err := regexp.Compile(params.pattern)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		ix, err := prepareIndex(params)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		q := index.RegexpQuery(re.Syntax)
+		log.Tracef("Query: %s\n", q)
+
+		var post []uint32
+		if params.bruteFlag {
+			post = ix.PostingQuery(&index.Query{Op: index.QAll})
+		} else {
+			post = ix.PostingQuery(q)
+		}
+
+		log.Tracef("Post query identified %d possible files\n", len(post))
+
+		var fre *regexp.Regexp
+		if params.fFlag != "" {
+			fre, err = regexp.Compile(params.fFlag)
+			if err != nil {
+				log.Panic(err)
+			}
+		}
+
+		var fExcludeRe *regexp.Regexp
+		if params.fExcludeFlag != "" {
+			fExcludeRe, err = regexp.Compile(params.fExcludeFlag)
+			if err != nil {
+				log.Panic(err)
+			}
+		}
+
 		pathsStr := params.filePathsStr
 		if params.ignorePathsCase {
 			pathsStr = strings.ToLower(pathsStr)
@@ -187,208 +218,128 @@ func selectFiles(re *regexp.Regexp, ix *index.Index, params *CSearchParams) (pos
 			}
 
 			if shouldAppend {
-				fnames = append(fnames, fileid)
-			}
-		}
-
-		if params.verboseFlag {
-			log.Printf("filename regexp matched %d files\n", len(fnames))
-		}
-		post = fnames
-	}
-
-	return post, nil
-}
-
-func prepareIndex(params *CSearchParams) (*index.Index, error) {
-	if params.indexPath != "" {
-		err := os.Setenv("CSEARCHINDEX", params.indexPath)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	ix := index.Open(index.File())
-	ix.Verbose = params.verboseFlag
-	return ix, nil
-}
-
-func limitResults(ctx context.Context, wg *sync.WaitGroup,
-	results chan<- regexp.GrepResult, maxElements int64) (context.Context, chan<- regexp.GrepResult) {
-
-	lctx, cancel := context.WithCancel(ctx)
-	res := make(chan regexp.GrepResult)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		var count int64
-		wasCancelled := false
-		for r := range res {
-			if maxElements <= 0 || atomic.AddInt64(&count, 1) <= maxElements {
-				results <- r
-			} else if !wasCancelled {
-				cancel()
-				wasCancelled = true
-			}
-		}
-	}()
-	return lctx, res
-}
-
-func searchWorker(ctx context.Context, params *CSearchParams, console utils.ConsoleWriter,
-	files <-chan string, output chan<- regexp.GrepResult) bool {
-	localRe, _ := regexp.Compile(params.pattern)
-	localGrep := regexp.Grep{
-		Stdout: console.Out(),
-		Stderr: console.Err(),
-		Params: params.grepParams,
-		Regexp: localRe,
-	}
-	localGrep.LimitPrintCount(params.maxCount, params.maxCountPerFile)
-
-	somethingFound := false
-	var wg sync.WaitGroup
-	for file := range files {
-		select {
-		case <-ctx.Done():
-			fmt.Fprintf(console.Err(), "Output is closed. Stop on file %s\n", file)
-			return somethingFound
-		default:
-		}
-
-		lctx, limiter := limitResults(ctx, &wg, output, params.maxCountPerFile)
-		if localGrep.File(lctx, file, limiter) {
-			somethingFound = true
-		}
-		close(limiter)
-
-		if params.extStatus {
-			fmt.Fprintf(console.Out(), "Status: search in file %s\n", file)
-		}
-		fmt.Fprintf(console.Err(), "End search in file %s\n", file)
-	}
-
-	wg.Wait()
-	return somethingFound
-}
-
-type prefixWriter struct {
-	out io.Writer
-}
-
-func (w *prefixWriter) Write(p []byte) (n int, err error) {
-	now := time.Now()
-	h, m, s := now.Clock()
-	y, mn, d := now.Date()
-	return fmt.Fprintf(w.out, "[%d/%d/%d %d:%d:%d.%d] %s", y, mn, d, h, m, s, now.Nanosecond(), p)
-}
-
-type prefixConsole struct {
-	out io.Writer
-	err io.Writer
-}
-
-func (w *prefixConsole) Out() io.Writer {
-	return w.out
-}
-
-func (w *prefixConsole) Err() io.Writer {
-	return w.err
-}
-
-func printResults(ctx context.Context, params *CSearchParams, out io.Writer, results <-chan regexp.GrepResult) <-chan struct{} {
-	done := make(chan struct{})
-	go func() {
-		for r := range results {
-			if params.grepParams.PrinterParams.PrintFileNamesOnly {
-				if params.grepParams.PrinterParams.PrintNullTerminatedStrings {
-					fmt.Fprintf(out, "%s\x00", r.FileName)
-				} else {
-					fmt.Fprintf(out, "%s\n", r.FileName)
+				select {
+				case files <- name:
+				case <-ctx.Done():
+					return
 				}
-			} else {
-				var text string
-				if params.grepParams.PrinterParams.PrintFileName {
-					text = r.FileName + ":"
-				}
-				if params.grepParams.PrinterParams.PrintLineNumbers {
-					text = fmt.Sprintf("%s%d:", text, r.LineNum)
-				}
-				fmt.Fprintf(out, "%s%s", text, r.Text)
-			}
-		}
-		close(done)
-	}()
-	return done
-}
-
-func performSearch(ctx context.Context, workersCount int, params *CSearchParams, files <-chan string) bool {
-	console := &prefixConsole{
-		out: utils.GetConsoleWriter().Out(),
-		err: &prefixWriter{utils.GetConsoleWriter().Err()},
-	}
-
-	var wg sync.WaitGroup
-	var limiterWg sync.WaitGroup
-	results := make(chan regexp.GrepResult, 1000)
-	lctx, limiter := limitResults(ctx, &limiterWg, results, params.maxCount)
-	printDone := printResults(ctx, params, console.Out(), results)
-	var matches int32
-	for i := 0; i < workersCount; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if searchWorker(lctx, params, console, files, limiter) {
-				atomic.AddInt32(&matches, 1)
-			}
-		}()
-	}
-	wg.Wait()
-	close(limiter)
-	limiterWg.Wait()
-	close(results)
-	<-printDone
-	return matches > 1
-}
-
-func produceFiles(ctx context.Context, ix *index.Index, ids []uint32, buffer int) <-chan string {
-	files := make(chan string, buffer)
-	go func() {
-		defer close(files)
-		for _, fileid := range ids {
-			name := ix.Name(fileid)
-			select {
-			case files <- name:
-			case <-ctx.Done():
-				return
 			}
 		}
 	}()
 	return files
 }
 
-func doSearch(params *CSearchParams, ix *index.Index, ids []uint32) bool {
-	numOfWorkers := 1
-	if params.multithread {
-		numOfWorkers = 1
+func searchWorker(ctx context.Context, params *CSearchParams,
+	files <-chan string, output chan<- regexp.GrepResult) bool {
+	localRe, _ := regexp.Compile(params.pattern)
+	localGrep := regexp.Grep{
+		Params: params.grepParams,
+		Regexp: localRe,
 	}
 
-	ctx := context.TODO()
-	return performSearch(ctx, numOfWorkers, params, produceFiles(ctx, ix, ids, numOfWorkers))
+	somethingFound := false
+	for file := range files {
+		select {
+		case <-ctx.Done():
+			return somethingFound
+		default:
+		}
+
+		if params.extStatus {
+			fmt.Fprintf(utils.GetConsoleWriter().Out(), "Status: search in file %s\n", file)
+		}
+
+		lctx, cancel := context.WithCancel(ctx)
+		var count int64
+		for r := range localGrep.File(lctx, file) {
+			count++
+			if params.maxCountPerFile <= 0 || count <= params.maxCountPerFile {
+				select {
+				case <-lctx.Done():
+				case output <- r:
+					somethingFound = true
+				}
+			} else {
+				log.Tracef("File limit achieved. File: %s", file)
+				cancel()
+			}
+		}
+		cancel()
+	}
+
+	return somethingFound
 }
 
-func search() bool {
-	var params CSearchParams
-	params.addFlags()
-	flag.Usage = usage
-	flag.Parse()
-	args := flag.Args()
-
-	if len(args) != 1 || (params.grepParams.L && params.grepParams.C) ||
-		(params.grepParams.L && params.maxCountPerFile > 0) || (params.grepParams.C && params.maxCountPerFile > 0) {
-		usage()
+func formatResult(params *CSearchParams, r *regexp.GrepResult) string {
+	var text string
+	if params.printFileNamesOnly {
+		if params.printNullTerminatedStrings {
+			text = fmt.Sprintf("%s\x00", r.FileName)
+		} else {
+			text = fmt.Sprintf("%s\n", r.FileName)
+		}
+	} else {
+		if !params.printWithoutFileName {
+			text = r.FileName + ":"
+		}
+		if params.printLineNumbers {
+			text = fmt.Sprintf("%s%d:", text, r.LineNum)
+		}
+		text = fmt.Sprintf("%s%s", text, r.Text)
 	}
+	return text
+}
 
+func performSearch(ctx context.Context, params *CSearchParams, workersCount int) bool {
+	lctx, cancel := context.WithCancel(ctx)
+	var wg sync.WaitGroup
+	out := make(chan regexp.GrepResult, 1000)
+	wg.Add(1)
+	go func() {
+		defer close(out)
+		defer wg.Done()
+		var locWg sync.WaitGroup
+		files := produceFiles(lctx, params, workersCount)
+		for i := 0; i < workersCount; i++ {
+			locWg.Add(1)
+			go func() {
+				defer locWg.Done()
+				searchWorker(lctx, params, files, out)
+			}()
+		}
+		locWg.Wait()
+	}()
+
+	wg.Add(1)
+	var count int64
+	go func() {
+		defer wg.Done()
+		for r := range out {
+			count++
+			if params.maxCount <= 0 || count <= params.maxCount {
+				fmt.Fprintf(utils.GetConsoleWriter().Out(), "%s", formatResult(params, &r))
+			} else {
+				log.Trace("Global limit achieved.")
+				break
+			}
+		}
+		cancel()
+	}()
+
+	wg.Wait()
+	return count > 0
+}
+
+func doSearch(params *CSearchParams) bool {
+	numOfWorkers := 10
+	if params.noMultiThread {
+		numOfWorkers = 1
+	}
+	ctx := context.TODO()
+	return performSearch(ctx, params, numOfWorkers)
+}
+
+func search(params *CSearchParams) bool {
 	if params.cpuProfile != "" {
 		f, err := os.Create(params.cpuProfile)
 		if err != nil {
@@ -399,38 +350,36 @@ func search() bool {
 		defer pprof.StopCPUProfile()
 	}
 
+	return doSearch(params)
+}
+
+func main() {
+	var params CSearchParams
+	params.addFlags()
+	flag.Usage = usage
+	flag.Parse()
+	args := flag.Args()
+
+	if len(args) != 1 || (params.printFileNamesOnly && params.printMatchesCount) ||
+		(params.printFileNamesOnly && params.maxCountPerFile > 0) || (params.printMatchesCount && params.maxCountPerFile > 0) {
+		usage()
+	}
 	params.pattern = "(?m)" + args[0]
 	if params.iFlag {
 		params.pattern = "(?i)" + params.pattern
 	}
-	re, err := regexp.Compile(params.pattern)
-	if err != nil {
-		log.Fatal(err)
-	}
 
-	ix, err := prepareIndex(&params)
-	if err != nil {
-		log.Fatal(err)
+	if params.verboseFlag {
+		log.SetLevel(log.TraceLevel)
+	} else {
+		log.SetLevel(log.InfoLevel)
 	}
-
-	post, err := selectFiles(re, ix, &params)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	allFilesCount := len(post)
-	if allFilesCount == 0 {
-		log.Fatal("0 files identified with selected params.")
-	}
-	if params.extStatus {
-		fmt.Fprintf(os.Stdout, "Status: Identified %d possible files", len(post))
-	}
-
-	return doSearch(&params, ix, post)
-}
-
-func main() {
-	if !search() {
+	log.SetFormatter(&log.TextFormatter{
+		FullTimestamp:          true,
+		DisableLevelTruncation: true,
+		ForceColors:            true,
+	})
+	if !search(&params) {
 		utils.DoneConsoleWriter()
 		os.Exit(1)
 	}
