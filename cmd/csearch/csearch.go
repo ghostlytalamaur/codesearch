@@ -7,15 +7,21 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"runtime/pprof"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/ghostlytalamaur/codesearch/index"
 	"github.com/ghostlytalamaur/codesearch/regexp"
+	"github.com/ghostlytalamaur/codesearch/utils"
 )
 
 const usageMessage = `usage: csearch [options] regexp
@@ -91,6 +97,8 @@ type CSearchParams struct {
 	filePathsStr    string //   = flag.String("filepaths", "", "search only files in specified paths separated by |")
 	ignorePathsCase bool   //  = flag.Bool("ignorepathscase", false, "Ignore case of paths specified by filepaths param")
 	extStatus       bool   //      = flag.Bool("extstatus", false, "Print additional status info")
+	multithread     bool
+	pattern         string
 	grepParams      regexp.GrepParams
 }
 
@@ -107,6 +115,7 @@ func (p *CSearchParams) addFlags() {
 	flag.StringVar(&p.filePathsStr, "filepaths", "", "search only files in specified paths separated by |")
 	flag.BoolVar(&p.ignorePathsCase, "ignorepathscase", false, "Ignore case of paths specified by filepaths param")
 	flag.BoolVar(&p.extStatus, "extstatus", false, "Print additional status info")
+	flag.BoolVar(&p.multithread, "multithread", false, "use multiple threads")
 	p.grepParams.AddFlags()
 }
 
@@ -204,6 +213,170 @@ func prepareIndex(params *CSearchParams) (*index.Index, error) {
 	return ix, nil
 }
 
+func limitResults(ctx context.Context, wg *sync.WaitGroup,
+	results chan<- regexp.GrepResult, maxElements int64) (context.Context, chan<- regexp.GrepResult) {
+
+	lctx, cancel := context.WithCancel(ctx)
+	res := make(chan regexp.GrepResult)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var count int64
+		for r := range res {
+			select {
+			case <-lctx.Done():
+				return
+			default:
+				if maxElements <= 0 || atomic.AddInt64(&count, 1) <= maxElements {
+					results <- r
+				} else {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return lctx, res
+}
+
+func searchWorker(ctx context.Context, params *CSearchParams, console utils.ConsoleWriter,
+	files <-chan string, output chan<- regexp.GrepResult) bool {
+	localRe, _ := regexp.Compile(params.pattern)
+	localGrep := regexp.Grep{
+		Stdout: console.Out(),
+		Stderr: console.Err(),
+		Params: params.grepParams,
+		Regexp: localRe,
+	}
+	localGrep.LimitPrintCount(params.maxCount, params.maxCountPerFile)
+
+	somethingFound := false
+	var wg sync.WaitGroup
+	for file := range files {
+		select {
+		case <-ctx.Done():
+			fmt.Fprintf(console.Err(), "Output is closed. Stop on file %s\n", file)
+			return somethingFound
+		default:
+		}
+
+		lctx, limiter := limitResults(ctx, &wg, output, params.maxCountPerFile)
+		if localGrep.File(lctx, file, limiter) {
+			somethingFound = true
+		}
+		close(limiter)
+
+		if params.extStatus {
+			fmt.Fprintf(console.Out(), "Status: search in file %s\n", file)
+		}
+		fmt.Fprintf(console.Err(), "End search in file %s\n", file)
+	}
+
+	wg.Wait()
+	return somethingFound
+}
+
+type prefixWriter struct {
+	out io.Writer
+}
+
+func (w *prefixWriter) Write(p []byte) (n int, err error) {
+	now := time.Now()
+	h, m, s := now.Clock()
+	y, mn, d := now.Date()
+	return fmt.Fprintf(w.out, "[%d/%d/%d %d:%d:%d.%d] %s", y, mn, d, h, m, s, now.Nanosecond(), p)
+}
+
+type prefixConsole struct {
+	out io.Writer
+	err io.Writer
+}
+
+func (w *prefixConsole) Out() io.Writer {
+	return w.out
+}
+
+func (w *prefixConsole) Err() io.Writer {
+	return w.err
+}
+
+func printResults(ctx context.Context, params *CSearchParams, out io.Writer, results <-chan regexp.GrepResult) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		for r := range results {
+			if params.grepParams.PrinterParams.PrintFileNamesOnly {
+				if params.grepParams.PrinterParams.PrintNullTerminatedStrings {
+					fmt.Fprintf(out, "%s\x00", r.FileName)
+				} else {
+					fmt.Fprintf(out, "%s\n", r.FileName)
+				}
+			} else {
+				var text string
+				if params.grepParams.PrinterParams.PrintFileName {
+					text = r.FileName + ":"
+				}
+				if params.grepParams.PrinterParams.PrintLineNumbers {
+					text = fmt.Sprintf("%s%d:", text, r.LineNum)
+				}
+				fmt.Fprintf(out, "%s%s", text, r.Text)
+			}
+		}
+		close(done)
+	}()
+	return done
+}
+
+func performSearch(ctx context.Context, workersCount int, params *CSearchParams, files <-chan string) bool {
+	console := &prefixConsole{
+		out: utils.GetConsoleWriter().Out(),
+		err: &prefixWriter{utils.GetConsoleWriter().Err()},
+	}
+
+	results := make(chan regexp.GrepResult, 1000)
+	printDone := printResults(ctx, params, console.Out(), results)
+	var matches int32
+	var wg sync.WaitGroup
+	for i := 0; i < workersCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if searchWorker(ctx, params, console, files, results) {
+				atomic.AddInt32(&matches, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	<-printDone
+	return matches > 1
+}
+
+func produceFiles(ctx context.Context, ix *index.Index, ids []uint32, buffer int) <-chan string {
+	files := make(chan string, buffer)
+	go func() {
+		defer close(files)
+		for _, fileid := range ids {
+			name := ix.Name(fileid)
+			select {
+			case files <- name:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return files
+}
+
+func doSearch(params *CSearchParams, ix *index.Index, ids []uint32) bool {
+	numOfWorkers := 1
+	if params.multithread {
+		numOfWorkers = 1
+	}
+
+	ctx := context.TODO()
+	return performSearch(ctx, numOfWorkers, params, produceFiles(ctx, ix, ids, numOfWorkers))
+}
+
 func search() bool {
 	var params CSearchParams
 	params.addFlags()
@@ -226,11 +399,11 @@ func search() bool {
 		defer pprof.StopCPUProfile()
 	}
 
-	pat := "(?m)" + args[0]
+	params.pattern = "(?m)" + args[0]
 	if params.iFlag {
-		pat = "(?i)" + pat
+		params.pattern = "(?i)" + params.pattern
 	}
-	re, err := regexp.Compile(pat)
+	re, err := regexp.Compile(params.pattern)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -252,32 +425,15 @@ func search() bool {
 	if params.extStatus {
 		fmt.Fprintf(os.Stdout, "Status: Identified %d possible files", len(post))
 	}
-	g := regexp.Grep{
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-		Params: params.grepParams,
-		Regexp: re,
-	}
-	g.LimitPrintCount(params.maxCount, params.maxCountPerFile)
 
-	for i, fileid := range post {
-		name := ix.Name(fileid)
-		if params.extStatus {
-			fmt.Fprintf(os.Stdout, "Status: Searching in %d/%d file %s\n", i, allFilesCount, name)
-		}
-		g.File(name)
-		// short circuit here too
-		if g.Done {
-			break
-		}
-	}
-
-	return g.Match
+	return doSearch(&params, ix, post)
 }
 
 func main() {
 	if !search() {
+		utils.DoneConsoleWriter()
 		os.Exit(1)
 	}
+	utils.DoneConsoleWriter()
 	os.Exit(0)
 }

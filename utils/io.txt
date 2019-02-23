@@ -1,0 +1,7 @@
+package 
+
+// ConsoleWriter interface, that may used concurrently for writing in console
+type ConsoleWriter interface {
+	Out() io.Writer
+	Err() io.Writer
+}
