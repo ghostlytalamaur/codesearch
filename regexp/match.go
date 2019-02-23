@@ -20,7 +20,6 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/ghostlytalamaur/codesearch/sparse"
-	"github.com/logrusorgru/aurora"
 )
 
 // A matcher holds the state for running regular expression search.
@@ -399,6 +398,15 @@ func (g *Grep) File(ctx context.Context, name string) <-chan GrepResult {
 	return out
 }
 
+func (g *Grep) Reader(ctx context.Context, name string, reader io.Reader) <-chan GrepResult {
+	out := make(chan GrepResult)
+	go func() {
+		defer close(out)
+		g.uniReader2(ctx, reader, name, out)
+	}()
+	return out
+}
+
 var nl = []byte{'\n'}
 
 func countNL(b []byte) int {
@@ -456,6 +464,7 @@ func (p *grepResultMaker) makeResult(buffer []byte, chunkStart, start int, end i
 
 	preMatchStr := buffer[lineStart:start]
 	matchStr := buffer[start:end]
+	// aurora.Bold(matchStr)
 	postMatchStr := buffer[end:lineEnd]
 
 	if p.params.addLinesCount > 0 {
@@ -467,7 +476,7 @@ func (p *grepResultMaker) makeResult(buffer []byte, chunkStart, start int, end i
 		idx = findNL(buffer, end, true, p.params.addLinesCount)
 		postMatchStr = buffer[end : idx+1]
 	}
-	text = fmt.Sprintf("%s%s%s", preMatchStr, aurora.Bold(matchStr), postMatchStr)
+	text = fmt.Sprintf("%s%s%s", preMatchStr, matchStr, postMatchStr)
 	return GrepResult{
 		FileName: p.fileName,
 		LineNum:  p.lineNum,
