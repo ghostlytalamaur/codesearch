@@ -25,14 +25,17 @@ var grepTests = []struct {
 }
 
 var grepResultTest = []struct {
-	re string
-	in string
-	n  int
-	s  string
+	isRe2 bool
+	re    string
+	in    string
+	n     int
+	s     string
+	cnt   int
 }{
-	{re: `abc`, in: "abc\nbca", n: 1, s: "abc\n"},
-	{re: `bca`, in: "abc\nbca", n: 2, s: "bca"},
-	{re: `bca`, in: "abc\nbca\n", n: 2, s: "bca\n"},
+	{isRe2: false, re: `abc`, in: "abc\nbca", n: 1, s: "abc\n", cnt: 1},
+	{isRe2: false, re: `bca`, in: "abc\nbca", n: 2, s: "bca", cnt: 1},
+	{isRe2: false, re: `bca`, in: "abc\nbca\n", n: 2, s: "bca\n", cnt: 1},
+	{isRe2: true, re: `(?s)c.*bca`, in: "ab\nc\nbca\n", n: 2, s: "c\nbca\n", cnt: 1},
 }
 
 func TestGrepResult(t *testing.T) {
@@ -43,14 +46,26 @@ func TestGrepResult(t *testing.T) {
 			continue
 		}
 		var g Grep
+		var errb bytes.Buffer
+		log.SetOutput(&errb)
+		log.SetLevel(log.ErrorLevel)
 		g.Params.disableColors = true
 		g.Regexp = re
+		g.Params.useRe2 = tt.isRe2
+		var matches int
+
+		if errb.String() != "" {
+			t.Errorf("#%d: grep(%#q, %q) has errors %s", i, tt.re, tt.in, errb.String())
+		}
 		for r := range g.Reader(context.Background(), "input", strings.NewReader(tt.in)) {
+			matches++
 			if r.LineNum != tt.n || r.Text != tt.s {
 				t.Errorf("#%d: grep(%#q, %q) = (%d, %q), want (%d, %q)", i, tt.re, tt.in, r.LineNum, r.Text, tt.n, tt.s)
 			}
 		}
-
+		if matches != tt.cnt {
+			t.Errorf("#%d: grep(%#q, %q) incorrect matches count, expected %d, but was %d", i, tt.re, tt.in, tt.cnt, matches)
+		}
 	}
 }
 

@@ -304,27 +304,13 @@ func performSearch(ctx context.Context, params *CSearchParams, workersCount int)
 	return count > 0
 }
 
-func doSearch(params *CSearchParams) bool {
+func search(params *CSearchParams) bool {
 	numOfWorkers := 10
 	if params.noMultiThread {
 		numOfWorkers = 1
 	}
 	ctx := context.TODO()
 	return performSearch(ctx, params, numOfWorkers)
-}
-
-func search(params *CSearchParams) bool {
-	if params.cpuProfile != "" {
-		f, err := os.Create(params.cpuProfile)
-		if err != nil {
-			log.Fatal(err)
-		}
-		defer f.Close()
-		pprof.StartCPUProfile(f)
-		defer pprof.StopCPUProfile()
-	}
-
-	return doSearch(params)
 }
 
 func main() {
@@ -339,6 +325,17 @@ func main() {
 		(params.printMatchesCount && params.maxCountPerFile > 0) {
 		usage()
 	}
+
+	if params.cpuProfile != "" {
+		f, err := os.Create(params.cpuProfile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer f.Close()
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
+
 	params.pattern = "(?m)" + args[0]
 	if params.iFlag {
 		params.pattern = "(?i)" + params.pattern
