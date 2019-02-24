@@ -35,6 +35,7 @@ var grepResultTest = []struct {
 	{isRe2: false, re: `abc`, in: "abc\nbca", n: 1, s: "abc\n", cnt: 1},
 	{isRe2: false, re: `bca`, in: "abc\nbca", n: 2, s: "bca", cnt: 1},
 	{isRe2: false, re: `bca`, in: "abc\nbca\n", n: 2, s: "bca\n", cnt: 1},
+	{isRe2: false, re: `bca`, in: "abc\nbca\n", n: 2, s: "bca\n", cnt: 1},
 	{isRe2: true, re: `(?s)c.*bca`, in: "ab\nc\nbca\n", n: 2, s: "c\nbca\n", cnt: 1},
 }
 
@@ -49,6 +50,12 @@ func TestGrepResult(t *testing.T) {
 		var errb bytes.Buffer
 		log.SetOutput(&errb)
 		log.SetLevel(log.ErrorLevel)
+
+		formatParams := ResultFormatParams{
+			WithColors:           false,
+			PrintLineNumbers:     false,
+			PrintWithoutFileName: true,
+		}
 		g.Params.disableColors = true
 		g.Regexp = re
 		g.Params.useRe2 = tt.isRe2
@@ -59,8 +66,9 @@ func TestGrepResult(t *testing.T) {
 		}
 		for r := range g.Reader(context.Background(), "input", strings.NewReader(tt.in)) {
 			matches++
-			if r.LineNum != tt.n || r.Text != tt.s {
-				t.Errorf("#%d: grep(%#q, %q) = (%d, %q), want (%d, %q)", i, tt.re, tt.in, r.LineNum, r.Text, tt.n, tt.s)
+			text := string(r.Format(&formatParams))
+			if r.LineNum != tt.n || text != tt.s {
+				t.Errorf("#%d: grep(%#q, %q) = (%d, %q), want (%d, %q)", i, tt.re, tt.in, r.LineNum, text, tt.n, tt.s)
 			}
 		}
 		if matches != tt.cnt {
@@ -76,6 +84,11 @@ func TestGrep(t *testing.T) {
 			t.Errorf("Compile(%#q): %v", tt.re, err)
 			continue
 		}
+		formatParams := ResultFormatParams{
+			WithColors:           false,
+			PrintLineNumbers:     false,
+			PrintWithoutFileName: true,
+		}
 		g := tt.g
 		g.Params.disableColors = true
 		g.Regexp = re
@@ -83,7 +96,8 @@ func TestGrep(t *testing.T) {
 		log.SetOutput(&errb)
 		log.SetLevel(log.ErrorLevel)
 		for r := range g.Reader(context.Background(), "input", strings.NewReader(tt.s)) {
-			fmt.Fprintf(&out, "%s:%s", r.FileName, r.Text)
+			text := string(r.Format(&formatParams))
+			fmt.Fprintf(&out, "%s:%s", r.FileName, text)
 		}
 		println(out.String())
 		if out.String() != tt.out || errb.String() != tt.err {

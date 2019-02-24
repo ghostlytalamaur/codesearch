@@ -18,7 +18,6 @@ import (
 	"github.com/ghostlytalamaur/codesearch/grep"
 	"github.com/ghostlytalamaur/codesearch/index"
 	"github.com/ghostlytalamaur/codesearch/regexp"
-	"github.com/ghostlytalamaur/codesearch/utils"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -199,15 +198,17 @@ func produceFiles(ctx context.Context, params *CSearchParams, buffer int) <-chan
 				}
 			}
 
-			shouldAppend := false
-			for _, filePath := range filePaths {
-				if params.ignorePathsCase {
-					shouldAppend = strings.Contains(strings.ToLower(name), filePath)
-				} else {
-					shouldAppend = strings.Contains(name, filePath)
-				}
-				if shouldAppend {
-					break
+			shouldAppend := len(filePaths) == 0
+			if len(filePaths) > 0 {
+				for _, filePath := range filePaths {
+					if params.ignorePathsCase {
+						shouldAppend = strings.Contains(strings.ToLower(name), filePath)
+					} else {
+						shouldAppend = strings.Contains(name, filePath)
+					}
+					if shouldAppend {
+						break
+					}
 				}
 			}
 
@@ -224,7 +225,9 @@ func produceFiles(ctx context.Context, params *CSearchParams, buffer int) <-chan
 }
 
 func searchWorker(ctx context.Context, params *CSearchParams,
-	files <-chan string, output chan<- grep.Result) bool {
+	status chan<- string,
+	files <-chan string,
+	output chan<- grep.Result) bool {
 	localRe, _ := regexp.Compile(params.pattern)
 	localGrep := grep.Grep{
 		Params: params.grepParams,
@@ -240,7 +243,7 @@ func searchWorker(ctx context.Context, params *CSearchParams,
 		}
 
 		if params.extStatus {
-			fmt.Fprintf(utils.GetConsoleWriter().Out(), "Status: search in file %s\n", file)
+			status <- fmt.Sprintf("Status: search in file %s\n", file)
 		}
 
 		lctx, cancel := context.WithCancel(ctx)
@@ -268,17 +271,26 @@ func performSearch(ctx context.Context, params *CSearchParams, workersCount int)
 	lctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	out := make(chan grep.Result, 1000)
+	printChan := make(chan string, 1000)
+	printDone := make(chan struct{})
+	go func() {
+		defer close(printDone)
+		for s := range printChan {
+			fmt.Print(s)
+		}
+	}()
+
 	wg.Add(1)
 	go func() {
 		defer close(out)
-		defer wg.Done()
 		var locWg sync.WaitGroup
+		defer wg.Done()
 		files := produceFiles(lctx, params, workersCount)
 		for i := 0; i < workersCount; i++ {
 			locWg.Add(1)
 			go func() {
 				defer locWg.Done()
-				searchWorker(lctx, params, files, out)
+				searchWorker(lctx, params, printChan, files, out)
 			}()
 		}
 		locWg.Wait()
@@ -288,19 +300,22 @@ func performSearch(ctx context.Context, params *CSearchParams, workersCount int)
 	var count int64
 	go func() {
 		defer wg.Done()
+		defer cancel()
 		for r := range out {
 			count++
 			if params.maxCount <= 0 || count <= params.maxCount {
-				fmt.Fprintf(utils.GetConsoleWriter().Out(), "%s", r.Format(&params.formatParams))
+				printChan <- string(r.Format(&params.formatParams))
 			} else {
 				log.Trace("Global limit achieved.")
 				break
 			}
 		}
-		cancel()
 	}()
 
 	wg.Wait()
+	close(printChan)
+	<-printDone
+
 	return count > 0
 }
 
@@ -313,13 +328,15 @@ func search(params *CSearchParams) bool {
 	return performSearch(ctx, params, numOfWorkers)
 }
 
-func main() {
+// _main func to handle defer
+func _main() bool {
 	var params CSearchParams
 	params.addFlags()
 	flag.Usage = usage
 	flag.Parse()
 	args := flag.Args()
 
+	params.formatParams.WithColors = true
 	if len(args) != 1 || (params.formatParams.PrintFileNamesOnly && params.printMatchesCount) ||
 		(params.formatParams.PrintFileNamesOnly && params.maxCountPerFile > 0) ||
 		(params.printMatchesCount && params.maxCountPerFile > 0) {
@@ -351,10 +368,12 @@ func main() {
 		DisableLevelTruncation: true,
 		ForceColors:            true,
 	})
-	if !search(&params) {
-		utils.DoneConsoleWriter()
+	return search(&params)
+}
+
+func main() {
+	if !_main() {
 		os.Exit(1)
 	}
-	utils.DoneConsoleWriter()
 	os.Exit(0)
 }
