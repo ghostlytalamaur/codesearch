@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/ghostlytalamaur/codesearch/regexp"
+	"github.com/logrusorgru/aurora"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -31,6 +32,7 @@ type Result struct {
 type Params struct {
 	useRe2        bool // Use Go regexp engine
 	addLinesCount uint
+	disableColors bool
 }
 
 // AddFlags : Add flags to command line parser
@@ -162,7 +164,6 @@ func (p *grepResultMaker) makeResult(buffer []byte, chunkStart, start int, end i
 
 	preMatchStr := buffer[lineStart:start]
 	matchStr := buffer[start:end]
-	// aurora.Bold(matchStr)
 	postMatchStr := buffer[end:lineEnd]
 
 	if p.params.addLinesCount > 0 {
@@ -174,7 +175,11 @@ func (p *grepResultMaker) makeResult(buffer []byte, chunkStart, start int, end i
 		idx = findNL(buffer, end, true, p.params.addLinesCount)
 		postMatchStr = buffer[end : idx+1]
 	}
-	text = fmt.Sprintf("%s%s%s", preMatchStr, matchStr, postMatchStr)
+	if p.params.disableColors {
+		text = fmt.Sprintf("%s%s%s", preMatchStr, matchStr, postMatchStr)
+	} else {
+		text = fmt.Sprintf("%s%s%s", preMatchStr, aurora.Bold(matchStr), postMatchStr)
+	}
 	return Result{
 		FileName: p.fileName,
 		LineNum:  p.lineNum,
@@ -207,6 +212,7 @@ func (g *Grep) uniReader2(ctx context.Context, r io.Reader, name string, output 
 	maker := grepResultMaker{
 		params:   &g.Params,
 		fileName: name,
+		lineNum:  1,
 	}
 
 	var (

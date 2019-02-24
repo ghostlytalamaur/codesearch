@@ -24,6 +24,36 @@ var grepTests = []struct {
 	// {re: `(?s)(?m)var.*Integer`, s: "var\r\n  I: Integer;\r\n", out: "input:var\r\n  I: Integer;\r\n"},
 }
 
+var grepResultTest = []struct {
+	re string
+	in string
+	n  int
+	s  string
+}{
+	{re: `abc`, in: "abc\nbca", n: 1, s: "abc\n"},
+	{re: `bca`, in: "abc\nbca", n: 2, s: "bca"},
+	{re: `bca`, in: "abc\nbca\n", n: 2, s: "bca\n"},
+}
+
+func TestGrepResult(t *testing.T) {
+	for i, tt := range grepResultTest {
+		re, err := regexp.Compile("(?m)" + tt.re)
+		if err != nil {
+			t.Errorf("Compile(%#q): %v", tt.re, err)
+			continue
+		}
+		var g Grep
+		g.Params.disableColors = true
+		g.Regexp = re
+		for r := range g.Reader(context.Background(), "input", strings.NewReader(tt.in)) {
+			if r.LineNum != tt.n || r.Text != tt.s {
+				t.Errorf("#%d: grep(%#q, %q) = (%d, %q), want (%d, %q)", i, tt.re, tt.in, r.LineNum, r.Text, tt.n, tt.s)
+			}
+		}
+
+	}
+}
+
 func TestGrep(t *testing.T) {
 	for i, tt := range grepTests {
 		re, err := regexp.Compile("(?m)" + tt.re)
@@ -32,6 +62,7 @@ func TestGrep(t *testing.T) {
 			continue
 		}
 		g := tt.g
+		g.Params.disableColors = true
 		g.Regexp = re
 		var out, errb bytes.Buffer
 		log.SetOutput(&errb)
