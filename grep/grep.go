@@ -161,7 +161,7 @@ func (p *grepResultMaker) makeResult(buffer []byte, chunkStart, start int, end i
 		if lineStart != 0 {
 			lineStart++
 		}
-		lineEnd = findNL(buffer, end, true, p.params.addLinesCount)
+		lineEnd = findNL(buffer, end, true, p.params.addLinesCount) + 1
 	} else {
 		lineStart = bytes.LastIndex(buffer[:start], nl) + 1
 		lineEnd = len(buffer)
@@ -169,9 +169,10 @@ func (p *grepResultMaker) makeResult(buffer []byte, chunkStart, start int, end i
 		if nlIndex := bytes.Index(buffer[end:], nl); nlIndex >= 0 {
 			lineEnd = nlIndex + 1 + end
 		}
-		if lineEnd > len(buffer) {
-			lineEnd = len(buffer)
-		}
+	}
+
+	if lineEnd > len(buffer) {
+		lineEnd = len(buffer)
 	}
 
 	b := make([]byte, lineEnd-lineStart)

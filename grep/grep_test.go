@@ -25,17 +25,19 @@ var grepTests = []struct {
 }
 
 var grepResultTest = []struct {
-	isRe2 bool
-	re    string
-	in    string
-	n     int
-	s     string
-	cnt   int
+	isRe2    bool
+	re       string
+	addLines uint
+	in       string
+	n        int
+	s        string
+	cnt      int
 }{
 	{isRe2: false, re: `abc`, in: "abc\nbca", n: 1, s: "abc\n", cnt: 1},
 	{isRe2: false, re: `bca`, in: "abc\nbca", n: 2, s: "bca", cnt: 1},
 	{isRe2: false, re: `bca`, in: "abc\nbca\n", n: 2, s: "bca\n", cnt: 1},
 	{isRe2: false, re: `bca`, in: "abc\nbca\n", n: 2, s: "bca\n", cnt: 1},
+	{isRe2: false, re: `bca`, in: "4jkl;\nabc\nbca\nqwerty\ntest\n", n: 3, s: "abc\nbca\nqwerty\n", cnt: 1, addLines: 1},
 	{isRe2: true, re: `(?s)c.*bca`, in: "ab\nc\nbca\n", n: 2, s: "c\nbca\n", cnt: 1},
 }
 
@@ -59,6 +61,7 @@ func TestGrepResult(t *testing.T) {
 		g.Params.disableColors = true
 		g.Regexp = re
 		g.Params.useRe2 = tt.isRe2
+		g.Params.addLinesCount = tt.addLines
 		var matches int
 
 		if errb.String() != "" {
