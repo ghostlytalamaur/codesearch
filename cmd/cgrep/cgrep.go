@@ -52,6 +52,9 @@ func main() {
 	var g grep.Grep
 	var grepParams grep.Params
 	var formatParams grep.ResultFormatParams
+	formatParams.WithColors = true
+	formatParams.EnsureNewLine = true
+
 	grepParams.AddFlags()
 	formatParams.AddFlags()
 	g.Params = grepParams

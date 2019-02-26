@@ -336,6 +336,7 @@ func _main() bool {
 	flag.Parse()
 	args := flag.Args()
 
+	params.formatParams.EnsureNewLine = true
 	params.formatParams.WithColors = true
 	if len(args) != 1 || (params.formatParams.PrintFileNamesOnly && params.printMatchesCount) ||
 		(params.formatParams.PrintFileNamesOnly && params.maxCountPerFile > 0) ||

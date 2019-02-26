@@ -44,11 +44,12 @@ func (p *Params) AddFlags() {
 
 // ResultFormatParams parameters for formatting GrepResult
 type ResultFormatParams struct {
-	PrintFileNamesOnly         bool // L flag - print file names only
-	PrintNullTerminatedStrings bool // 0 flag - print matches separated by \0
-	PrintLineNumbers           bool // N flag - print line numbers
-	PrintWithoutFileName       bool // H flag - do not print file names
-	WithColors                 bool
+	PrintFileNamesOnly         bool // print file names only
+	PrintNullTerminatedStrings bool // print matches separated by \0
+	PrintLineNumbers           bool // print line numbers
+	PrintWithoutFileName       bool // do not print file names
+	WithColors                 bool // highlight match with ansi escape bold code
+	EnsureNewLine              bool // ensure that text contains new line at the end
 }
 
 // AddFlags add command line parser flags
@@ -92,6 +93,9 @@ func (r *Result) Format(params *ResultFormatParams) []byte {
 		} else {
 			b.Write(r.textBuf)
 		}
+	}
+	if b.Len() > 0 && params.EnsureNewLine && b.Bytes()[len(b.Bytes())-1] != '\n' {
+		b.WriteByte('\n')
 	}
 	return b.Bytes()
 }
