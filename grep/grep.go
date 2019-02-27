@@ -146,9 +146,9 @@ func findNL(buf []byte, startpos int, isDirect bool, skipLines uint) int {
 		}
 	}
 	if isDirect {
-		return 0
+		return len(buf)
 	}
-	return len(buf)
+	return 0
 }
 
 type grepResultMaker struct {
@@ -253,6 +253,7 @@ func (g *Grep) uniReader2(ctx context.Context, r io.Reader, name string, output 
 				return
 			case output <- r:
 			}
+			maker.lineNum += bytes.Count(buf[matchEnd:lineEnd], nl)
 			chunkStart = lineEnd
 			if chunkStart > end {
 				chunkStart = end
